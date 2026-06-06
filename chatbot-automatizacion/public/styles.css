@@ -217,6 +217,33 @@ h2 {
     transform 140ms ease;
 }
 
+.whatsapp-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(53, 209, 132, 0.35);
+  border-radius: 8px;
+  background: rgba(21, 64, 45, 0.68);
+  color: #c9ffe2;
+  padding: 9px 12px;
+}
+
+.whatsapp-button:hover {
+  background: rgba(53, 209, 132, 0.15);
+  border-color: rgba(53, 209, 132, 0.62);
+}
+
+.whatsapp-button span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(53, 209, 132, 0.18);
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .delete-chatbot-button:hover {
   background: rgba(255, 82, 105, 0.16);
   border-color: rgba(255, 82, 105, 0.58);
@@ -478,7 +505,8 @@ h2 {
   display: none;
 }
 
-.confirm-modal {
+.confirm-modal,
+.whatsapp-modal {
   width: min(440px, 100%);
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -487,8 +515,20 @@ h2 {
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.52);
 }
 
+.whatsapp-modal {
+  width: min(560px, 100%);
+}
+
 .confirm-modal h2 {
   margin-bottom: 10px;
+}
+
+.modal-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .confirm-copy {
@@ -506,6 +546,64 @@ h2 {
 
 .confirm-primary {
   box-shadow: none;
+}
+
+.whatsapp-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+  color: #cad5e8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.whatsapp-field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0d111a;
+  color: var(--text);
+  padding: 12px 13px;
+  outline: none;
+}
+
+.whatsapp-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.whatsapp-status {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #101723;
+  color: #cbd6e8;
+  padding: 11px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.qr-box {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  margin-top: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: #0c111a;
+  color: var(--muted);
+  padding: 16px;
+  text-align: center;
+}
+
+.qr-box img {
+  width: min(260px, 100%);
+  height: auto;
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
 }
 
 @media (max-width: 1050px) {
@@ -545,8 +643,13 @@ h2 {
     justify-content: center;
   }
 
-  .confirm-actions {
+  .confirm-actions,
+  .whatsapp-actions {
     grid-template-columns: 1fr;
+  }
+
+  .modal-title-row {
+    display: grid;
   }
 
   .editor-row,

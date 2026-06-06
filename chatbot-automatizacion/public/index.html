@@ -38,6 +38,10 @@
           </div>
           <div class="topbar-actions">
             <button class="ghost-button" id="resetChatButton" type="button">Limpiar chat</button>
+            <button class="whatsapp-button" id="connectWhatsappButton" type="button">
+              <span aria-hidden="true">WA</span>
+              Conectar WhatsApp
+            </button>
             <button class="delete-chatbot-button" id="deleteBotButton" type="button">
               <span aria-hidden="true">×</span>
               Borrar chatbot
@@ -116,6 +120,37 @@
         <div class="confirm-actions">
           <button class="ghost-button" id="confirmCancelButton" type="button">Cancelar</button>
           <button class="save-button confirm-primary" id="confirmAcceptButton" type="button">Aceptar</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="whatsappModal" hidden>
+      <section class="whatsapp-modal" role="dialog" aria-modal="true" aria-labelledby="whatsappTitle">
+        <div class="modal-title-row">
+          <div>
+            <p class="eyebrow">Canal de mensajes</p>
+            <h2 id="whatsappTitle">Conectar WhatsApp</h2>
+          </div>
+          <button class="ghost-button compact" id="closeWhatsappButton" type="button">Cerrar</button>
+        </div>
+
+        <p class="confirm-copy">
+          Modo local con Evolution API. Escanea el QR desde WhatsApp > Dispositivos vinculados.
+        </p>
+
+        <label class="whatsapp-field">
+          Numero de WhatsApp
+          <input id="whatsappPhoneInput" type="tel" placeholder="Ej: 573001234567" />
+        </label>
+
+        <div class="whatsapp-actions">
+          <button class="save-button" id="startWhatsappButton" type="button">Generar QR</button>
+          <button class="ghost-button" id="checkWhatsappButton" type="button">Revisar estado</button>
+        </div>
+
+        <div class="whatsapp-status" id="whatsappStatusText">Sin conectar todavia.</div>
+        <div class="qr-box" id="qrBox">
+          <p>El QR aparecera aqui cuando Evolution lo entregue.</p>
         </div>
       </section>
     </div>

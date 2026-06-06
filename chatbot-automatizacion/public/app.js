@@ -70,6 +70,7 @@ const saveBotButton = document.querySelector("#saveBotButton");
 const newBotButton = document.querySelector("#newBotButton");
 const resetChatButton = document.querySelector("#resetChatButton");
 const deleteBotButton = document.querySelector("#deleteBotButton");
+const connectWhatsappButton = document.querySelector("#connectWhatsappButton");
 const addFieldButton = document.querySelector("#addFieldButton");
 const saveStatus = document.querySelector("#saveStatus");
 const connectionText = document.querySelector("#connectionText");
@@ -78,6 +79,13 @@ const confirmTitle = document.querySelector("#confirmTitle");
 const confirmMessage = document.querySelector("#confirmMessage");
 const confirmAcceptButton = document.querySelector("#confirmAcceptButton");
 const confirmCancelButton = document.querySelector("#confirmCancelButton");
+const whatsappModal = document.querySelector("#whatsappModal");
+const closeWhatsappButton = document.querySelector("#closeWhatsappButton");
+const whatsappPhoneInput = document.querySelector("#whatsappPhoneInput");
+const startWhatsappButton = document.querySelector("#startWhatsappButton");
+const checkWhatsappButton = document.querySelector("#checkWhatsappButton");
+const whatsappStatusText = document.querySelector("#whatsappStatusText");
+const qrBox = document.querySelector("#qrBox");
 let pendingConfirmResolve = null;
 
 function clone(value) {
@@ -157,11 +165,30 @@ function commitEditorBot({ showMessage = true } = {}) {
   const updated = readEditorBot();
   bots = bots.map((bot) => (bot.id === activeBotId ? updated : bot));
   saveBots();
+  syncWhatsappBot(updated);
   lastSavedSnapshot = JSON.stringify(updated);
   renderBots();
   renderQuickTests();
   activeBotTitle.textContent = updated.name;
   if (showMessage) showSavedStatus();
+}
+
+async function syncWhatsappBot(bot = readEditorBot()) {
+  try {
+    await fetch("/api/whatsapp/save-bot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        botId: bot.id,
+        bot: {
+          ...bot,
+          knowledge: knowledgeFromFields(bot.fields),
+        },
+      }),
+    });
+  } catch {
+    // La conexion WhatsApp es opcional; no debe romper la configuracion visual.
+  }
 }
 
 function showConfirmModal({ title, message, acceptLabel = "Aceptar", cancelLabel = "Cancelar" }) {
@@ -410,6 +437,97 @@ async function deleteActiveBot() {
   render();
 }
 
+function setWhatsappStatus(text) {
+  whatsappStatusText.textContent = text;
+}
+
+function renderQr(qr) {
+  qrBox.innerHTML = "";
+  if (qr?.image) {
+    const image = document.createElement("img");
+    image.src = qr.image;
+    image.alt = "QR para vincular WhatsApp";
+    qrBox.appendChild(image);
+    return;
+  }
+  const message = document.createElement("p");
+  message.textContent = qr?.pairingCode
+    ? `Codigo de vinculacion: ${qr.pairingCode}`
+    : "No se recibio QR todavia. Revisa estado o intenta generar de nuevo.";
+  qrBox.appendChild(message);
+}
+
+async function openWhatsappModal() {
+  const bot = readEditorBot();
+  await syncWhatsappBot(bot);
+  whatsappModal.hidden = false;
+  setWhatsappStatus("Consultando estado de WhatsApp...");
+  qrBox.innerHTML = "<p>El QR aparecera aqui cuando Evolution lo entregue.</p>";
+  try {
+    const response = await fetch("/api/whatsapp/status");
+    const data = await response.json();
+    whatsappPhoneInput.value = data.state?.phone || whatsappPhoneInput.value || "";
+    const state = data.evolution?.state || "desconocido";
+    setWhatsappStatus(
+      `Instancia: ${data.state?.instanceName || "sin instancia"} · Estado: ${state}. El bot activo quedo asignado a WhatsApp.`,
+    );
+  } catch (error) {
+    setWhatsappStatus(`No pude consultar Evolution API: ${error.message}`);
+  }
+}
+
+function closeWhatsappModal() {
+  whatsappModal.hidden = true;
+}
+
+async function startWhatsappConnection() {
+  const bot = readEditorBot();
+  await syncWhatsappBot(bot);
+  setWhatsappStatus("Generando QR con Evolution API...");
+  qrBox.innerHTML = "<p>Generando QR...</p>";
+  startWhatsappButton.disabled = true;
+  try {
+    const response = await fetch("/api/whatsapp/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        phone: whatsappPhoneInput.value,
+        botId: bot.id,
+        bot: {
+          ...bot,
+          knowledge: knowledgeFromFields(bot.fields),
+        },
+      }),
+    });
+    const data = await response.json();
+    renderQr(data.qr);
+    const connectionState = data.connection?.instance?.state || data.connection?.state || "pendiente";
+    setWhatsappStatus(`${data.note} Instancia: ${data.instanceName}. Estado: ${connectionState}.`);
+  } catch (error) {
+    setWhatsappStatus(`No pude generar QR: ${error.message}`);
+    renderQr(null);
+  } finally {
+    startWhatsappButton.disabled = false;
+  }
+}
+
+async function checkWhatsappStatus() {
+  setWhatsappStatus("Revisando estado...");
+  try {
+    const response = await fetch("/api/whatsapp/status");
+    const data = await response.json();
+    const state = data.evolution?.state || "desconocido";
+    const connected = ["open", "connected"].includes(String(state).toLowerCase());
+    setWhatsappStatus(
+      connected
+        ? `WhatsApp conectado. Instancia: ${data.state?.instanceName}.`
+        : `Todavia no esta conectado. Estado: ${state}. Si tienes QR visible, escanealo desde WhatsApp.`,
+    );
+  } catch (error) {
+    setWhatsappStatus(`No pude revisar estado: ${error.message}`);
+  }
+}
+
 function addField() {
   const id = `field-${Date.now()}`;
   const section = document.createElement("section");
@@ -485,15 +603,23 @@ messageForm.addEventListener("submit", (event) => {
 saveBotButton.addEventListener("click", () => commitEditorBot());
 newBotButton.addEventListener("click", createNewBot);
 deleteBotButton.addEventListener("click", deleteActiveBot);
+connectWhatsappButton.addEventListener("click", openWhatsappModal);
 addFieldButton.addEventListener("click", addField);
+closeWhatsappButton.addEventListener("click", closeWhatsappModal);
+startWhatsappButton.addEventListener("click", startWhatsappConnection);
+checkWhatsappButton.addEventListener("click", checkWhatsappStatus);
 
 confirmAcceptButton.addEventListener("click", () => closeConfirmModal(true));
 confirmCancelButton.addEventListener("click", () => closeConfirmModal(false));
 confirmModal.addEventListener("click", (event) => {
   if (event.target === confirmModal) closeConfirmModal(false);
 });
+whatsappModal.addEventListener("click", (event) => {
+  if (event.target === whatsappModal) closeWhatsappModal();
+});
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !confirmModal.hidden) closeConfirmModal(false);
+  if (event.key === "Escape" && !whatsappModal.hidden) closeWhatsappModal();
 });
 
 resetChatButton.addEventListener("click", () => {

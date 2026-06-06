@@ -46,6 +46,29 @@ La cuenta ChatGPT Plus/Premium no sirve como token de API; la API key pertenece 
 
 Para WhatsApp real se necesita Evolution API o WhatsApp Cloud configurado con QR/token e instancia conectada.
 
+## WhatsApp local con Evolution API
+
+La interfaz incluye `Conectar WhatsApp`.
+
+Flujo:
+
+1. Guarda la configuracion del bot que quieres usar.
+2. Presiona `Conectar WhatsApp`.
+3. Escribe el numero y genera QR.
+4. Escanea desde WhatsApp > Dispositivos vinculados.
+5. Cuando un cliente escriba a ese WhatsApp, Evolution envia el mensaje al servidor local, el servidor consulta n8n/OpenAI y responde por WhatsApp.
+
+Variables usadas:
+
+```text
+EVOLUTION_API_URL=http://127.0.0.1:8082
+EVOLUTION_API_KEY=miapikey123
+EVOLUTION_INSTANCE=JuandAVID187
+PUBLIC_WEBHOOK_BASE=http://host.docker.internal:8090
+```
+
+Esto es modo de prueba con WhatsApp Web/Evolution, no API oficial de Meta. Puede cerrar sesion, requerir reescanear QR o fallar si WhatsApp cambia controles.
+
 ## Live Server vs npm start
 
 Live Server sirve para ver la interfaz visual, pero no sirve para el chat completo porque no levanta el proxy `/api/chat` ni el endpoint seguro `/api/ai`.
