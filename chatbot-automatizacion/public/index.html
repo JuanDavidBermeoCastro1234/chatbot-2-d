@@ -38,7 +38,10 @@
           </div>
           <div class="topbar-actions">
             <button class="ghost-button" id="resetChatButton" type="button">Limpiar chat</button>
-            <button class="danger-button" id="deleteBotButton" type="button">Borrar chatbot</button>
+            <button class="delete-chatbot-button" id="deleteBotButton" type="button">
+              <span aria-hidden="true">×</span>
+              Borrar chatbot
+            </button>
           </div>
         </header>
 
@@ -103,6 +106,18 @@
           </aside>
         </section>
       </main>
+    </div>
+
+    <div class="modal-backdrop" id="confirmModal" hidden>
+      <section class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+        <p class="eyebrow">Confirmacion</p>
+        <h2 id="confirmTitle">Revisar accion</h2>
+        <p class="confirm-copy" id="confirmMessage"></p>
+        <div class="confirm-actions">
+          <button class="ghost-button" id="confirmCancelButton" type="button">Cancelar</button>
+          <button class="save-button confirm-primary" id="confirmAcceptButton" type="button">Aceptar</button>
+        </div>
+      </section>
     </div>
 
     <script src="./app.js"></script>

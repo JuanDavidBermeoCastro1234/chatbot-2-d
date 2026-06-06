@@ -73,6 +73,12 @@ const deleteBotButton = document.querySelector("#deleteBotButton");
 const addFieldButton = document.querySelector("#addFieldButton");
 const saveStatus = document.querySelector("#saveStatus");
 const connectionText = document.querySelector("#connectionText");
+const confirmModal = document.querySelector("#confirmModal");
+const confirmTitle = document.querySelector("#confirmTitle");
+const confirmMessage = document.querySelector("#confirmMessage");
+const confirmAcceptButton = document.querySelector("#confirmAcceptButton");
+const confirmCancelButton = document.querySelector("#confirmCancelButton");
+let pendingConfirmResolve = null;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -158,11 +164,36 @@ function commitEditorBot({ showMessage = true } = {}) {
   if (showMessage) showSavedStatus();
 }
 
-function confirmLeavingUnsavedChanges() {
+function showConfirmModal({ title, message, acceptLabel = "Aceptar", cancelLabel = "Cancelar" }) {
+  confirmTitle.textContent = title;
+  confirmMessage.textContent = message;
+  confirmAcceptButton.textContent = acceptLabel;
+  confirmCancelButton.textContent = cancelLabel;
+  confirmModal.hidden = false;
+  confirmAcceptButton.focus();
+
+  return new Promise((resolve) => {
+    pendingConfirmResolve = resolve;
+  });
+}
+
+function closeConfirmModal(value) {
+  if (!pendingConfirmResolve) return;
+  const resolve = pendingConfirmResolve;
+  pendingConfirmResolve = null;
+  confirmModal.hidden = true;
+  resolve(value);
+}
+
+async function confirmLeavingUnsavedChanges() {
   if (!hasUnsavedChanges()) return true;
-  const shouldSave = window.confirm(
-    "Tienes cambios sin guardar. Aceptar = guardar automaticamente y continuar. Cancelar = continuar sin guardar y perder esos cambios.",
-  );
+  const shouldSave = await showConfirmModal({
+    title: "Cambios sin guardar",
+    message:
+      "Tienes informacion nueva en este chatbot. Puedes guardarla automaticamente antes de cambiar, o continuar sin guardarla.",
+    acceptLabel: "Guardar y continuar",
+    cancelLabel: "Continuar sin guardar",
+  });
   if (shouldSave) commitEditorBot({ showMessage: false });
   return true;
 }
@@ -332,16 +363,16 @@ function readEditorBot() {
   });
 }
 
-function switchBot(id) {
+async function switchBot(id) {
   if (id === activeBotId) return;
-  if (!confirmLeavingUnsavedChanges()) return;
+  if (!(await confirmLeavingUnsavedChanges())) return;
   activeBotId = id;
   messages = [];
   render();
 }
 
-function createNewBot() {
-  if (!confirmLeavingUnsavedChanges()) return;
+async function createNewBot() {
+  if (!(await confirmLeavingUnsavedChanges())) return;
   const id = `bot-${Date.now()}`;
   const bot = {
     id,
@@ -361,9 +392,14 @@ function createNewBot() {
   render();
 }
 
-function deleteActiveBot() {
+async function deleteActiveBot() {
   const bot = activeBot();
-  const confirmed = window.confirm(`Seguro que quieres borrar el chatbot "${bot.name}"?`);
+  const confirmed = await showConfirmModal({
+    title: "Borrar chatbot",
+    message: `Vas a borrar "${bot.name}". Esta accion elimina su configuracion local y no se puede deshacer.`,
+    acceptLabel: "Borrar chatbot",
+    cancelLabel: "Cancelar",
+  });
   if (!confirmed) return;
 
   bots = bots.filter((item) => item.id !== activeBotId);
@@ -450,6 +486,15 @@ saveBotButton.addEventListener("click", () => commitEditorBot());
 newBotButton.addEventListener("click", createNewBot);
 deleteBotButton.addEventListener("click", deleteActiveBot);
 addFieldButton.addEventListener("click", addField);
+
+confirmAcceptButton.addEventListener("click", () => closeConfirmModal(true));
+confirmCancelButton.addEventListener("click", () => closeConfirmModal(false));
+confirmModal.addEventListener("click", (event) => {
+  if (event.target === confirmModal) closeConfirmModal(false);
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !confirmModal.hidden) closeConfirmModal(false);
+});
 
 resetChatButton.addEventListener("click", () => {
   messages = [];
