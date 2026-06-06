@@ -1,0 +1,10 @@
+{
+  "name": "chatbot-automatizacion-root",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "npm --prefix chatbot-automatizacion start",
+    "dev": "npm --prefix chatbot-automatizacion run dev",
+    "build:workflow": "npm --prefix chatbot-automatizacion run build:workflow"
+  }
+}

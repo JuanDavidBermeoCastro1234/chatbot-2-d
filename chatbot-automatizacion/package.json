@@ -1,0 +1,12 @@
+{
+  "name": "chatbot-automatizacion",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Interfaz local para crear y probar chatbots conectados a n8n.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build:workflow": "node tools/build-workflow.js"
+  }
+}

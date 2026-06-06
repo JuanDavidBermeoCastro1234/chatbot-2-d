@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chatbot Automatizacion</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Chatbots">
+        <div class="brand">
+          <div class="brand-mark">CA</div>
+          <div>
+            <strong>Chatbot</strong>
+            <span>Automatizacion</span>
+          </div>
+        </div>
+
+        <button class="primary-action" id="newBotButton" type="button">+ Nuevo chatbot</button>
+
+        <div class="sidebar-section">
+          <p class="section-label">Bots</p>
+          <div class="bot-list" id="botList"></div>
+        </div>
+
+        <div class="connection">
+          <span class="status-dot"></span>
+          <span id="connectionText">Conectado a n8n local</span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Nueva consulta</p>
+            <h1 id="activeBotTitle">Denin Camisetas</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" id="resetChatButton" type="button">Limpiar chat</button>
+            <button class="danger-button" id="deleteBotButton" type="button">Borrar chatbot</button>
+          </div>
+        </header>
+
+        <section class="content-grid">
+          <section class="chat-panel" aria-label="Conversacion">
+            <div class="chat-scroll" id="chatLog"></div>
+
+            <form class="composer" id="messageForm">
+              <input
+                id="messageInput"
+                name="message"
+                autocomplete="off"
+                placeholder="Pregunta por precio, marca, calidad, envios o pago contra entrega..."
+              />
+              <button class="send-button" type="submit" aria-label="Enviar mensaje">›</button>
+            </form>
+          </section>
+
+          <aside class="studio-panel" aria-label="Configuracion del chatbot">
+            <div class="panel-heading">
+              <p class="eyebrow">Bot studio</p>
+              <h2>Datos del negocio</h2>
+            </div>
+
+            <label>
+              Nombre del bot
+              <input id="botNameInput" type="text" />
+            </label>
+            <label>
+              Empresa
+              <input id="businessNameInput" type="text" />
+            </label>
+            <label>
+              Tono
+              <select id="toneInput">
+                <option value="profesional">Profesional</option>
+                <option value="cercano">Cercano</option>
+                <option value="premium">Premium</option>
+              </select>
+            </label>
+
+            <div class="knowledge-editor">
+              <div class="editor-row">
+                <div>
+                  <p class="section-label">Informacion del chatbot</p>
+                  <p class="helper-text">Cada apartado alimenta las respuestas y las pruebas rapidas.</p>
+                </div>
+                <button class="ghost-button compact" id="addFieldButton" type="button">+ Campo</button>
+              </div>
+              <div class="field-list" id="fieldList"></div>
+            </div>
+
+            <div class="quick-tests">
+              <p class="section-label">Pruebas rapidas</p>
+              <div class="quick-test-list" id="quickTestList"></div>
+            </div>
+
+            <div class="save-area">
+              <p class="save-status" id="saveStatus" aria-live="polite"></p>
+              <button class="save-button" id="saveBotButton" type="button">Guardar configuracion</button>
+            </div>
+          </aside>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

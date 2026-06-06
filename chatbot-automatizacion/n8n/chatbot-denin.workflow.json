@@ -1,0 +1,151 @@
+{
+  "id": "chatbotDenin001",
+  "name": "chatbot denin",
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chatbot-denin/chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "chatbot-denin-webhook",
+      "name": "Chatbot Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -760,
+        0
+      ],
+      "webhookId": "chatbot-denin-chat"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body || $json;\nconst message = String(payload.message || payload.mensaje || payload.text || \"\").trim();\nconst bot = payload.bot || {};\nconst knowledge = String(bot.knowledge || \"\");\nconst businessName = bot.businessName || bot.name || \"Denin Camisetas\";\nconst tone = bot.tone || \"profesional\";\n\nfunction normalize(value) {\n  return String(value || \"\").toLowerCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\");\n}\n\nfunction money(value) {\n  return new Intl.NumberFormat(\"es-CO\").format(value) + \" COP\";\n}\n\nconst catalog = [\n  { name: \"Basica algodon 100%\", price: 39900, quality: \"algodon suave, fresca y no transparenta\" },\n  { name: \"Oversize pesada 240 g\", price: 59900, quality: \"tela gruesa, caida amplia y costura reforzada\" },\n  { name: \"Premium cuello reforzado\", price: 69900, quality: \"acabado premium, cuello firme y mayor durabilidad\" },\n];\n\nfunction detectIntent(text) {\n  const lower = normalize(text);\n  if (/(precio|cuanto|cuesta|valor|vale|catalogo)/.test(lower)) return \"precio\";\n  if (/(contra entrega|contraentrega|pago|nequi|daviplata|transferencia)/.test(lower)) return \"pagos\";\n  if (/(envio|envios|entrega|pais|ciudad|domicilio)/.test(lower)) return \"envios\";\n  if (/(marca|calidad|tela|material|algodon|garantia)/.test(lower)) return \"calidad\";\n  if (/(talla|color|colores|disponible|stock)/.test(lower)) return \"disponibilidad\";\n  if (/(comprar|quiero|pedido|orden|separar|me interesa)/.test(lower)) return \"compra\";\n  return \"general\";\n}\n\nfunction style(text) {\n  if (tone === \"cercano\") return text.replace(/^Hola\\. /, \"Hola, que mas. \");\n  if (tone === \"premium\") return text + \" Te puedo orientar con una recomendacion segun el uso que buscas.\";\n  return text;\n}\n\nfunction responseFor(intent) {\n  if (!message) {\n    return {\n      reply: \"No recibi un mensaje. Escribeme una pregunta sobre precios, envios, pagos o disponibilidad.\",\n      lead_status: \"sin_mensaje\",\n    };\n  }\n\n  if (intent === \"precio\") {\n    return {\n      reply: style(\n        \"Hola. Estos son los precios de \" + businessName + \":\\n\" +\n          catalog.map((item) => \"- \" + item.name + \": \" + money(item.price)).join(\"\\n\") +\n          \"\\n\\nSi me dices talla, color y cantidad, te confirmo disponibilidad y total.\"\n      ),\n      lead_status: \"cotizando\",\n    };\n  }\n\n  if (intent === \"envios\") {\n    return {\n      reply: style(\n        \"Si, hacemos envios a todo Colombia. Bogota cuesta 8.000 COP, ciudades principales 12.000 COP y otros municipios se cotizan segun transportadora. Entrega: Bogota 1 a 2 dias habiles, otras ciudades 2 a 5 dias habiles.\"\n      ),\n      lead_status: \"informado\",\n    };\n  }\n\n  if (intent === \"pagos\") {\n    return {\n      reply: style(\n        \"Puedes pagar por transferencia, Nequi, Daviplata y pago contra entrega en ciudades principales. Para pago contra entrega necesito ciudad, barrio, talla, color y cantidad.\"\n      ),\n      lead_status: \"pago_consultado\",\n    };\n  }\n\n  if (intent === \"calidad\") {\n    return {\n      reply: style(\n        \"La calidad depende de la linea: basica en algodon suave, oversize en tela pesada 240 g y premium con cuello reforzado. Todas tienen costura reforzada y garantia por defecto de fabricacion.\"\n      ),\n      lead_status: \"calidad_consultada\",\n    };\n  }\n\n  if (intent === \"disponibilidad\") {\n    return {\n      reply: style(\n        \"Manejamos tallas S, M, L y XL. Colores: blanco, negro, arena, azul y verde. Dime que talla y color quieres para confirmarte la disponibilidad del pedido.\"\n      ),\n      lead_status: \"calificando\",\n    };\n  }\n\n  if (intent === \"compra\") {\n    return {\n      reply: style(\n        \"Perfecto. Para armar tu pedido necesito: nombre, ciudad, talla, color, cantidad y metodo de pago. Con eso te confirmo total y siguiente paso.\"\n      ),\n      lead_status: \"lead_caliente\",\n    };\n  }\n\n  return {\n    reply: style(\n      \"Hola. Soy el asistente de \" + businessName + \". Te puedo ayudar con precios, marcas, calidad, envios a todo el pais, pago contra entrega y disponibilidad. Que te gustaria saber?\"\n    ),\n    lead_status: \"nuevo\",\n  };\n}\n\nconst intent = detectIntent(message);\nconst fallback = responseFor(intent);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      source: \"n8n\",\n      bot: { name: bot.name || \"Denin Camisetas\", businessName, tone, knowledge },\n      message,\n      conversation: Array.isArray(payload.conversation) ? payload.conversation.slice(-8) : [],\n      intent,\n      fallbackReply: fallback.reply,\n      lead_status: fallback.lead_status,\n      reusable: true,\n      knowledge_used: knowledge ? \"frontend_bot_config\" : \"default_catalog\",\n      aiRequest: {\n        message,\n        bot: { name: bot.name || \"Denin Camisetas\", businessName, tone, knowledge },\n        conversation: Array.isArray(payload.conversation) ? payload.conversation.slice(-8) : [],\n        intent,\n        lead_status: fallback.lead_status,\n        fallbackReply: fallback.reply\n      }\n    },\n  },\n];"
+      },
+      "id": "chatbot-denin-prepare",
+      "name": "Preparar Contexto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8090/api/ai",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.aiRequest }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "chatbot-denin-ai-proxy",
+      "name": "Consultar IA Local",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -240,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepared = $(\"Preparar Contexto\").first().json;\nconst ai = $json || {};\nconst hasAiReply = ai.ok === true && typeof ai.reply === \"string\" && ai.reply.trim();\n\nreturn [\n  {\n    json: {\n      ok: true,\n      source: hasAiReply ? \"openai+n8n\" : \"n8n\",\n      bot: prepared.bot,\n      message: prepared.message,\n      intent: hasAiReply ? (ai.intent || prepared.intent) : prepared.intent,\n      reply: hasAiReply ? ai.reply : prepared.fallbackReply,\n      lead_status: hasAiReply ? (ai.lead_status || prepared.lead_status) : prepared.lead_status,\n      needs_human: Boolean(ai.needs_human),\n      reusable: true,\n      received_at: new Date().toISOString(),\n      knowledge_used: prepared.knowledge_used,\n      openai_model: ai.model || null,\n      fallback_used: !hasAiReply\n    },\n  },\n];"
+      },
+      "id": "chatbot-denin-finalize",
+      "name": "Finalizar Respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "chatbot-denin-respond",
+      "name": "Responder Chatbot",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        280,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Chatbot Webhook": {
+      "main": [
+        [
+          {
+            "node": "Preparar Contexto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Contexto": {
+      "main": [
+        [
+          {
+            "node": "Consultar IA Local",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar IA Local": {
+      "main": [
+        [
+          {
+            "node": "Finalizar Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalizar Respuesta": {
+      "main": [
+        [
+          {
+            "node": "Responder Chatbot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "7e80551a-9f7f-4f91-bb38-b2a9201ce8bb",
+  "versionCounter": 2,
+  "tags": []
+}
