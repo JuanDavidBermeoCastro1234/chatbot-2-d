@@ -1,0 +1,220 @@
+{
+  "id": "chatbotDeninWhatsapp001",
+  "name": "chatbot denin whatsapp",
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chatbot-denin/whatsapp",
+        "responseMode": "onReceived",
+        "responseData": "firstEntryJson",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "whatsapp-trigger",
+      "name": "WhatsApp Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        0
+      ],
+      "webhookId": "chatbot-denin-whatsapp"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body || $json;\nconst data = payload.data || payload;\nconst key = data.key || payload.key || {};\nconst message = data.message || payload.message || {};\nconst text = String(\n  message.conversation ||\n  message.extendedTextMessage?.text ||\n  message.imageMessage?.caption ||\n  message.videoMessage?.caption ||\n  data.text ||\n  payload.text ||\n  payload.messageText ||\n  ''\n).trim();\nconst remoteJid = String(\n  key.remoteJid ||\n  data.key?.remoteJid ||\n  data.remoteJid ||\n  payload.remoteJid ||\n  payload.from ||\n  payload.sender ||\n  ''\n);\nconst fromMe = Boolean(key.fromMe || data.fromMe || payload.fromMe);\nconst event = payload.event || payload.eventName || data.event || '';\nconst instanceName = payload.instance || payload.instanceName || data.instanceName || '';\n\nif (!text || fromMe || remoteJid.includes('@g.us')) {\n  return [];\n}\n\nreturn [{\n  json: {\n    event,\n    instanceName,\n    remoteJid,\n    text,\n    pushName: data.pushName || payload.pushName || '',\n    receivedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "prepare-whatsapp-message",
+      "name": "Preparar Mensaje WhatsApp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8090/api/whatsapp/n8n-config",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "load-active-bot",
+      "name": "Cargar Bot Activo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inbound = $('Preparar Mensaje WhatsApp').first().json;\nconst config = $json || {};\nconst bot = config.bot || {\n  name: 'Chatbot WhatsApp',\n  businessName: 'Empresa',\n  tone: 'profesional',\n  knowledge: 'Responde de forma breve y pide datos si el cliente quiere comprar.'\n};\nconst knowledge = String(bot.knowledge || '');\nconst text = String(inbound.text || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\n\nfunction linesFor(patterns) {\n  return knowledge\n    .split(/\\n+/)\n    .filter((line) => patterns.some((pattern) => pattern.test(line.toLowerCase())))\n    .join('\\n');\n}\n\nfunction fallbackReply() {\n  if (/precio|valor|cuanto|cuesta|vale|catalogo/.test(text)) {\n    const prices = linesFor([/precio/, /cop/, /\\$|[0-9][0-9.,]+/]);\n    return prices\n      ? `Claro. Estos son los precios de ${bot.businessName || bot.name}:\\n${prices}\\n\\nSi deseas comprar, dime talla, color, cantidad y ciudad.`\n      : `Claro. Puedo ayudarte con precios de ${bot.businessName || bot.name}. Dime que producto te interesa.`;\n  }\n  if (/envio|domicilio|entrega|pais|ciudad/.test(text)) {\n    const shipping = linesFor([/envio/, /entrega/, /domicilio/, /transportadora/]);\n    return shipping || 'Hacemos envios segun ciudad. Dime tu ciudad y te confirmo costo y tiempo de entrega.';\n  }\n  if (/pago|contra|nequi|daviplata|transferencia/.test(text)) {\n    const payments = linesFor([/pago/, /nequi/, /daviplata/, /transferencia/, /contra/]);\n    return payments || 'Puedes consultar metodos de pago y pago contra entrega. Dime tu ciudad para confirmar disponibilidad.';\n  }\n  if (/calidad|tela|material|garantia|marca/.test(text)) {\n    const quality = linesFor([/calidad/, /tela/, /algodon/, /garantia/, /costura/]);\n    return quality || 'Te puedo contar la calidad, material y garantia del producto. Que referencia te interesa?';\n  }\n  return `Hola, soy el asistente de ${bot.businessName || bot.name}. Te puedo ayudar con precios, calidad, envios, pagos y pedidos. Que deseas saber?`;\n}\n\nreturn [{\n  json: {\n    inbound,\n    instanceName: inbound.instanceName || config.instanceName,\n    remoteJid: inbound.remoteJid,\n    message: inbound.text,\n    bot,\n    aiRequest: {\n      message: inbound.text,\n      bot,\n      conversation: [{ role: 'user', text: inbound.text, channel: 'whatsapp', from: inbound.remoteJid }],\n      fallbackReply: fallbackReply()\n    }\n  }\n}];"
+      },
+      "id": "build-ai-request",
+      "name": "Preparar Consulta IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8090/api/ai",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.aiRequest }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "consult-ai",
+      "name": "Consultar IA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        60,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepared = $('Preparar Consulta IA').first().json;\nconst ai = $json || {};\nconst reply = ai.reply || prepared.aiRequest.fallbackReply;\n\nreturn [{\n  json: {\n    instanceName: prepared.instanceName,\n    remoteJid: prepared.remoteJid,\n    text: reply,\n    source: ai.ok ? 'openai+n8n-whatsapp' : 'fallback+n8n-whatsapp',\n    intent: ai.intent || 'general',\n    lead_status: ai.lead_status || 'nuevo'\n  }\n}];"
+      },
+      "id": "prepare-send",
+      "name": "Preparar Envio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8090/api/whatsapp/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "send-whatsapp-message",
+      "name": "Enviar Respuesta WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        0
+      ],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "WhatsApp Trigger": {
+      "main": [
+        [
+          {
+            "node": "Preparar Mensaje WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Mensaje WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Cargar Bot Activo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cargar Bot Activo": {
+      "main": [
+        [
+          {
+            "node": "Preparar Consulta IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Consulta IA": {
+      "main": [
+        [
+          {
+            "node": "Consultar IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar IA": {
+      "main": [
+        [
+          {
+            "node": "Preparar Envio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Envio": {
+      "main": [
+        [
+          {
+            "node": "Enviar Respuesta WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "8e78044b-b1b9-4d06-9318-46f7244f7b11",
+  "versionCounter": 1,
+  "tags": []
+}

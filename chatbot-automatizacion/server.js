@@ -14,7 +14,11 @@ const evolutionApiUrl = (process.env.EVOLUTION_API_URL || "http://127.0.0.1:8082
 const evolutionApiKey = process.env.EVOLUTION_API_KEY || "miapikey123";
 const evolutionInstance = process.env.EVOLUTION_INSTANCE || "JuandAVID187";
 const publicWebhookBase = (process.env.PUBLIC_WEBHOOK_BASE || "http://host.docker.internal:8090").replace(/\/$/, "");
+const n8nWhatsappWebhook = (
+  process.env.N8N_WHATSAPP_WEBHOOK || "http://host.docker.internal:5678/webhook/chatbot-denin/whatsapp"
+).replace(/\/$/, "");
 const whatsappStatePath = path.join(root, ".whatsapp-state.json");
+const whatsappEventsPath = path.join(root, ".whatsapp-events.jsonl");
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -135,13 +139,47 @@ function writeWhatsappState(nextState) {
   return merged;
 }
 
+function appendWhatsappEvent(event) {
+  const entry = {
+    at: new Date().toISOString(),
+    ...event,
+  };
+  fs.appendFileSync(whatsappEventsPath, `${JSON.stringify(entry)}\n`);
+}
+
+function recentWhatsappEvents(limit = 20) {
+  try {
+    const lines = fs
+      .readFileSync(whatsappEventsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-limit);
+    return lines.map((line) => safeJsonParse(line, { raw: line }));
+  } catch {
+    return [];
+  }
+}
+
 function normalizePhone(value) {
   return String(value || "").replace(/\D/g, "");
 }
 
 function instanceNameForPhone(phone) {
   const digits = normalizePhone(phone);
+  if (digits && evolutionInstance.includes(digits)) return evolutionInstance;
   return digits ? `chatbot_${digits}` : evolutionInstance;
+}
+
+function phoneFromInstance(instance) {
+  const owner =
+    instance?.ownerJid ||
+    instance?.owner ||
+    instance?.profile?.owner ||
+    instance?.instance?.ownerJid ||
+    instance?.instance?.owner ||
+    "";
+  return normalizePhone(owner);
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
@@ -170,6 +208,171 @@ async function evolutionRequest(pathname, options = {}, timeoutMs = 12000) {
   const text = await response.text();
   const payload = safeJsonParse(text, { raw: text });
   return { ok: response.ok, status: response.status, payload };
+}
+
+async function fetchEvolutionInstances() {
+  const result = await evolutionRequest("/instance/fetchInstances", { method: "GET" }, 12000);
+  const instances = Array.isArray(result.payload)
+    ? result.payload
+    : Array.isArray(result.payload?.instances)
+      ? result.payload.instances
+      : Array.isArray(result.payload?.value)
+        ? result.payload.value
+      : [];
+  return { ...result, instances };
+}
+
+function evolutionInstanceState(instance) {
+  return String(
+    instance?.connectionStatus ||
+      instance?.state ||
+      instance?.status ||
+      instance?.instance?.state ||
+      instance?.instance?.status ||
+      "unknown",
+  ).toLowerCase();
+}
+
+function isOpenEvolutionInstance(instance) {
+  return ["open", "connected"].includes(evolutionInstanceState(instance));
+}
+
+async function ensureEvolutionWebhook(instanceName) {
+  const webhookUrl = n8nWhatsappWebhook;
+  const webhook = {
+    enabled: true,
+    url: webhookUrl,
+    webhook_by_events: false,
+    webhook_base64: false,
+    events: ["MESSAGES_UPSERT"],
+  };
+  const result = await evolutionRequest(
+    `/webhook/set/${encodeURIComponent(instanceName)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(webhook),
+    },
+    12000,
+  );
+  const message = JSON.stringify(result.payload || "");
+  if (result.ok || !message.includes("requires property")) return result;
+  return evolutionRequest(
+    `/webhook/set/${encodeURIComponent(instanceName)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ webhook }),
+    },
+    12000,
+  );
+}
+
+async function resolveActiveEvolutionInstance(state) {
+  const currentName = state.instanceName || evolutionInstance;
+  let connection = null;
+
+  try {
+    const inventory = await fetchEvolutionInstances();
+    const currentInstance = inventory.instances.find((item) => {
+      const name = item.name || item.instanceName || item.instance?.instanceName;
+      return name === currentName;
+    });
+    if (currentInstance) {
+      const currentState = evolutionInstanceState(currentInstance);
+      if (["open", "connected", "connecting", "close"].includes(currentState)) {
+        return {
+          instanceName: currentName,
+          phone: phoneFromInstance(currentInstance) || state.phone,
+          state: currentState,
+          connection: {
+            ok: true,
+            payload: {
+              instance: {
+                instanceName: currentName,
+                state: currentState,
+              },
+            },
+          },
+          switched: false,
+        };
+      }
+    }
+    const openInstance = inventory.instances.find(isOpenEvolutionInstance);
+    if (openInstance) {
+      const nextName = openInstance.name || openInstance.instanceName || openInstance.instance?.instanceName || currentName;
+      return {
+        instanceName: nextName,
+        phone: phoneFromInstance(openInstance) || state.phone,
+        state: evolutionInstanceState(openInstance),
+        connection: {
+          ok: true,
+          payload: {
+            instance: {
+              state: evolutionInstanceState(openInstance),
+              name: nextName,
+            },
+          },
+        },
+        switched: nextName !== currentName,
+      };
+    }
+  } catch {
+    // Fall back to connectionState below.
+  }
+
+  try {
+    connection = await evolutionRequest(`/instance/connectionState/${encodeURIComponent(currentName)}`, {
+      method: "GET",
+    });
+    const currentState =
+      connection.payload?.instance?.state ||
+      connection.payload?.state ||
+      connection.payload?.status ||
+      "unknown";
+    if (["open", "connected"].includes(String(currentState).toLowerCase())) {
+      return {
+        instanceName: currentName,
+        phone: state.phone,
+        state: String(currentState).toLowerCase(),
+        connection,
+        switched: false,
+      };
+    }
+  } catch {
+    connection = null;
+  }
+
+  const inventory = await fetchEvolutionInstances();
+  const openInstance = inventory.instances.find(isOpenEvolutionInstance);
+  if (!openInstance) {
+    return {
+      instanceName: currentName,
+      phone: state.phone,
+      state:
+        connection?.payload?.instance?.state ||
+        connection?.payload?.state ||
+        connection?.payload?.status ||
+        "unknown",
+      connection,
+      switched: false,
+    };
+  }
+
+  const nextName = openInstance.name || openInstance.instanceName || openInstance.instance?.instanceName || currentName;
+  return {
+    instanceName: nextName,
+    phone: phoneFromInstance(openInstance) || state.phone,
+    state: evolutionInstanceState(openInstance),
+    connection: {
+      ok: true,
+      payload: {
+        instance: {
+          state: evolutionInstanceState(openInstance),
+          name: nextName,
+        },
+      },
+    },
+    switched: nextName !== currentName,
+  };
 }
 
 function extractQr(payload) {
@@ -214,13 +417,30 @@ function readInboundMessage(payload) {
     remoteJid: String(remoteJid || ""),
     fromMe: Boolean(key.fromMe || data.fromMe || payload.fromMe),
     pushName: data.pushName || payload.pushName || "",
+    event: payload.event || payload.eventName || data.event || "",
     instanceName: payload.instance || payload.instanceName || data.instanceName || readWhatsappState().instanceName,
   };
 }
 
 async function sendWhatsappText(instanceName, remoteJid, text) {
-  const number = String(remoteJid || "").replace(/@.+$/, "").replace(/\D/g, "");
+  const target = String(remoteJid || "").trim();
+  const isLid = target.endsWith("@lid");
+  const number = isLid ? target : target.replace(/@.+$/, "").replace(/\D/g, "");
   if (!number || !text) return { ok: false, error: "missing_number_or_text" };
+  const v2Result = await evolutionRequest(
+    `/message/sendText/${encodeURIComponent(instanceName)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        number,
+        text,
+      }),
+    },
+    15000,
+  );
+  if (v2Result.ok) return v2Result;
+  if (isLid) return v2Result;
+
   const result = await evolutionRequest(
     `/message/sendText/${encodeURIComponent(instanceName)}`,
     {
@@ -359,6 +579,56 @@ async function saveWhatsappBot(req, res) {
   sendJson(res, 200, { ok: true, configured: Boolean(state.bot), state: maskWhatsappState(state) });
 }
 
+async function whatsappN8nConfig(req, res) {
+  const state = readWhatsappState();
+  sendJson(res, 200, {
+    ok: true,
+    botId: state.botId || state.bot?.id || "",
+    bot: state.bot || null,
+    instanceName: state.instanceName || evolutionInstance,
+    evolutionApiUrl,
+    evolutionApiKey,
+    webhookUrl: n8nWhatsappWebhook,
+  });
+}
+
+async function whatsappSendMessage(req, res) {
+  const rawBody = await readRequestBody(req);
+  const payload = safeJsonParse(rawBody || "{}", {});
+  const state = readWhatsappState();
+  const instanceName = payload.instanceName || state.instanceName || evolutionInstance;
+  const remoteJid = payload.remoteJid || payload.number || "";
+  const text = payload.text || payload.reply || payload.message || "";
+
+  try {
+    const result = await sendWhatsappText(instanceName, remoteJid, text);
+    appendWhatsappEvent({
+      type: "n8n_send_attempt",
+      instanceName,
+      remoteJid,
+      text,
+      sent: Boolean(result.ok),
+      sendResult: result.ok ? "ok" : result.payload || result.error,
+    });
+    sendJson(res, 200, {
+      ok: Boolean(result.ok),
+      instanceName,
+      remoteJid,
+      sent: Boolean(result.ok),
+      result: result.ok ? result.payload : result.payload || result.error,
+    });
+  } catch (error) {
+    appendWhatsappEvent({
+      type: "n8n_send_error",
+      instanceName,
+      remoteJid,
+      text,
+      error: error.message,
+    });
+    sendJson(res, 500, { ok: false, error: error.message, instanceName, remoteJid });
+  }
+}
+
 function maskWhatsappState(state) {
   return {
     ...state,
@@ -376,14 +646,35 @@ function maskWhatsappState(state) {
 async function whatsappStatus(req, res) {
   const state = readWhatsappState();
   let evolution = { ok: false, state: "unknown" };
+  let webhook = { ok: false, state: "not_configured" };
   try {
-    const instanceName = state.instanceName || evolutionInstance;
-    const result = await evolutionRequest(`/instance/connectionState/${encodeURIComponent(instanceName)}`, {
-      method: "GET",
+    const active = await resolveActiveEvolutionInstance(state);
+    const connected = ["open", "connected"].includes(String(active.state).toLowerCase());
+    const nextState = writeWhatsappState({
+      instanceName: active.instanceName,
+      phone: active.phone,
+      connected,
     });
-    const value = result.payload?.instance?.state || result.payload?.state || result.payload?.status || "unknown";
-    evolution = { ok: result.ok, state: value, raw: result.payload };
-    writeWhatsappState({ connected: ["open", "connected"].includes(String(value).toLowerCase()) });
+    if (connected) {
+      try {
+        const webhookResult = await ensureEvolutionWebhook(active.instanceName);
+        webhook = {
+          ok: webhookResult.ok,
+          state: webhookResult.ok ? "configured" : "error",
+          raw: webhookResult.payload,
+        };
+      } catch (webhookError) {
+        webhook = { ok: false, state: "error", error: webhookError.message };
+      }
+    }
+    evolution = {
+      ok: Boolean(active.connection?.ok) || connected,
+      state: active.state,
+      instanceName: active.instanceName,
+      switchedToOpenInstance: active.switched,
+      raw: active.connection?.payload || null,
+    };
+    writeWhatsappState(nextState);
   } catch (error) {
     evolution = { ok: false, state: "error", error: error.message };
   }
@@ -392,8 +683,10 @@ async function whatsappStatus(req, res) {
     mode: "evolution_qr_local",
     risk:
       "Modo de prueba con WhatsApp Web/Evolution. No es la API oficial de Meta y puede cerrar sesion o bloquearse.",
-    webhookUrl: `${publicWebhookBase}/api/whatsapp/webhook`,
+    webhookUrl: n8nWhatsappWebhook,
+    n8nWhatsappWebhook,
     evolution,
+    webhook,
     state: maskWhatsappState(readWhatsappState()),
   });
 }
@@ -410,7 +703,7 @@ async function connectWhatsapp(req, res) {
     botId: payload.botId || payload.bot?.id || readWhatsappState().botId || "",
   });
 
-  const webhookUrl = `${publicWebhookBase}/api/whatsapp/webhook`;
+  const webhookUrl = n8nWhatsappWebhook;
   let createResult = null;
   let webhookResult = null;
   let qrResult = null;
@@ -434,20 +727,7 @@ async function connectWhatsapp(req, res) {
   }
 
   try {
-    webhookResult = await evolutionRequest(
-      `/webhook/set/${encodeURIComponent(instanceName)}`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          enabled: true,
-          url: webhookUrl,
-          webhook_by_events: false,
-          webhook_base64: false,
-          events: ["MESSAGES_UPSERT"],
-        }),
-      },
-      12000,
-    );
+    webhookResult = await ensureEvolutionWebhook(instanceName);
   } catch (error) {
     webhookResult = { ok: false, error: error.message };
   }
@@ -486,6 +766,17 @@ async function whatsappWebhook(req, res) {
   const rawBody = await readRequestBody(req);
   const payload = safeJsonParse(rawBody || "{}", {});
   const inbound = readInboundMessage(payload);
+  appendWhatsappEvent({
+    type: "webhook_received",
+    event: inbound.event || payload.event || "unknown",
+    instanceName: inbound.instanceName,
+    remoteJid: inbound.remoteJid,
+    fromMe: inbound.fromMe,
+    text: inbound.text,
+    ignoredCandidate: !inbound.text || inbound.fromMe || inbound.remoteJid.includes("@g.us"),
+    payloadKeys: Object.keys(payload || {}),
+    dataKeys: Object.keys(payload?.data || {}),
+  });
   writeWhatsappState({ lastWebhookAt: new Date().toISOString() });
 
   if (!inbound.text || inbound.fromMe || inbound.remoteJid.includes("@g.us")) {
@@ -513,6 +804,15 @@ async function whatsappWebhook(req, res) {
       sendResult = { ok: false, error: sendError.message };
     }
     writeWhatsappState({ lastMessageAt: new Date().toISOString() });
+    appendWhatsappEvent({
+      type: "reply_attempt",
+      event: inbound.event || "message",
+      instanceName: inbound.instanceName || state.instanceName,
+      remoteJid: inbound.remoteJid,
+      reply,
+      sent: Boolean(sendResult.ok),
+      sendResult: sendResult.ok ? "ok" : sendResult.payload || sendResult.error,
+    });
     sendJson(res, 200, {
       ok: true,
       inbound,
@@ -565,6 +865,14 @@ const server = http.createServer((req, res) => {
     saveWhatsappBot(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
     return;
   }
+  if (req.method === "GET" && req.url === "/api/whatsapp/n8n-config") {
+    whatsappN8nConfig(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/whatsapp/send") {
+    whatsappSendMessage(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
   if (req.method === "GET" && req.url === "/api/whatsapp/status") {
     whatsappStatus(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
     return;
@@ -586,6 +894,12 @@ const server = http.createServer((req, res) => {
       evolutionApiUrl,
       evolutionInstance,
     });
+    return;
+  }
+  if (req.method === "GET" && req.url.startsWith("/api/whatsapp/events")) {
+    const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+    const limit = Number(parsedUrl.searchParams.get("limit") || 20);
+    sendJson(res, 200, { ok: true, events: recentWhatsappEvents(Math.min(Math.max(limit, 1), 100)) });
     return;
   }
   serveStatic(req, res);

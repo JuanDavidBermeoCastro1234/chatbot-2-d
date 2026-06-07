@@ -55,6 +55,8 @@ let activeBotId = bots[0].id;
 let messages = [];
 let lastSavedSnapshot = "";
 let saveTimer = null;
+let whatsappBotId = "";
+let whatsappInstanceName = "";
 
 const botList = document.querySelector("#botList");
 const chatLog = document.querySelector("#chatLog");
@@ -165,7 +167,7 @@ function commitEditorBot({ showMessage = true } = {}) {
   const updated = readEditorBot();
   bots = bots.map((bot) => (bot.id === activeBotId ? updated : bot));
   saveBots();
-  syncWhatsappBot(updated);
+  if (updated.id === whatsappBotId) syncWhatsappBot(updated);
   lastSavedSnapshot = JSON.stringify(updated);
   renderBots();
   renderQuickTests();
@@ -179,11 +181,13 @@ async function syncWhatsappBot(bot = readEditorBot()) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        botId: bot.id,
-        bot: {
-          ...bot,
-          knowledge: knowledgeFromFields(bot.fields),
-        },
+        botId: bot?.id || "",
+        bot: bot
+          ? {
+              ...bot,
+              knowledge: knowledgeFromFields(bot.fields),
+            }
+          : null,
       }),
     });
   } catch {
@@ -231,7 +235,14 @@ function renderBots() {
     const button = document.createElement("button");
     button.className = `bot-item${bot.id === activeBotId ? " active" : ""}`;
     button.type = "button";
-    button.innerHTML = `<strong>${escapeHtml(bot.name)}</strong><span>${escapeHtml(bot.businessName)}</span>`;
+    const isWhatsappBot = bot.id === whatsappBotId;
+    button.innerHTML = `
+      <span class="bot-name-row">
+        <strong>${escapeHtml(bot.name)}</strong>
+        ${isWhatsappBot ? '<em class="whatsapp-badge">WhatsApp</em>' : ""}
+      </span>
+      <span>${escapeHtml(bot.businessName)}</span>
+    `;
     button.addEventListener("click", () => switchBot(bot.id));
     botList.appendChild(button);
   });
@@ -430,6 +441,10 @@ async function deleteActiveBot() {
   if (!confirmed) return;
 
   bots = bots.filter((item) => item.id !== activeBotId);
+  if (bot.id === whatsappBotId) {
+    whatsappBotId = "";
+    await syncWhatsappBot(null);
+  }
   if (!bots.length) bots = clone(defaultBots);
   activeBotId = bots[0].id;
   messages = [];
@@ -439,6 +454,15 @@ async function deleteActiveBot() {
 
 function setWhatsappStatus(text) {
   whatsappStatusText.textContent = text;
+}
+
+async function refreshWhatsappState() {
+  const response = await fetch("/api/whatsapp/status");
+  const data = await response.json();
+  whatsappBotId = data.state?.botId || data.state?.bot?.id || "";
+  whatsappInstanceName = data.state?.instanceName || "";
+  renderBots();
+  return data;
 }
 
 function renderQr(qr) {
@@ -458,18 +482,18 @@ function renderQr(qr) {
 }
 
 async function openWhatsappModal() {
-  const bot = readEditorBot();
-  await syncWhatsappBot(bot);
   whatsappModal.hidden = false;
   setWhatsappStatus("Consultando estado de WhatsApp...");
   qrBox.innerHTML = "<p>El QR aparecera aqui cuando Evolution lo entregue.</p>";
   try {
-    const response = await fetch("/api/whatsapp/status");
-    const data = await response.json();
+    const data = await refreshWhatsappState();
     whatsappPhoneInput.value = data.state?.phone || whatsappPhoneInput.value || "";
     const state = data.evolution?.state || "desconocido";
+    const assignedBot = bots.find((bot) => bot.id === whatsappBotId);
     setWhatsappStatus(
-      `Instancia: ${data.state?.instanceName || "sin instancia"} · Estado: ${state}. El bot activo quedo asignado a WhatsApp.`,
+      assignedBot
+        ? `WhatsApp usa ahora "${assignedBot.name}". Instancia: ${data.state?.instanceName || "sin instancia"}. Estado: ${state}.`
+        : "Todavia no hay un chatbot asignado a WhatsApp. Pulsa conectar para asignar el bot actual.",
     );
   } catch (error) {
     setWhatsappStatus(`No pude consultar Evolution API: ${error.message}`);
@@ -482,8 +506,10 @@ function closeWhatsappModal() {
 
 async function startWhatsappConnection() {
   const bot = readEditorBot();
-  await syncWhatsappBot(bot);
-  setWhatsappStatus("Generando QR con Evolution API...");
+  bots = bots.map((item) => (item.id === activeBotId ? bot : item));
+  saveBots();
+  lastSavedSnapshot = JSON.stringify(bot);
+  setWhatsappStatus(`Asignando "${bot.name}" como unico chatbot de WhatsApp y generando QR...`);
   qrBox.innerHTML = "<p>Generando QR...</p>";
   startWhatsappButton.disabled = true;
   try {
@@ -500,9 +526,14 @@ async function startWhatsappConnection() {
       }),
     });
     const data = await response.json();
+    whatsappBotId = bot.id;
+    whatsappInstanceName = data.instanceName || whatsappInstanceName;
+    renderBots();
     renderQr(data.qr);
     const connectionState = data.connection?.instance?.state || data.connection?.state || "pendiente";
-    setWhatsappStatus(`${data.note} Instancia: ${data.instanceName}. Estado: ${connectionState}.`);
+    setWhatsappStatus(
+      `${data.note} "${bot.name}" es el unico chatbot asignado a WhatsApp. Instancia: ${data.instanceName}. Estado: ${connectionState}.`,
+    );
   } catch (error) {
     setWhatsappStatus(`No pude generar QR: ${error.message}`);
     renderQr(null);
@@ -514,13 +545,13 @@ async function startWhatsappConnection() {
 async function checkWhatsappStatus() {
   setWhatsappStatus("Revisando estado...");
   try {
-    const response = await fetch("/api/whatsapp/status");
-    const data = await response.json();
+    const data = await refreshWhatsappState();
     const state = data.evolution?.state || "desconocido";
     const connected = ["open", "connected"].includes(String(state).toLowerCase());
+    const assignedBot = bots.find((bot) => bot.id === whatsappBotId);
     setWhatsappStatus(
       connected
-        ? `WhatsApp conectado. Instancia: ${data.state?.instanceName}.`
+        ? `WhatsApp conectado. Responde con "${assignedBot?.name || "el chatbot asignado"}". Instancia: ${data.state?.instanceName}.`
         : `Todavia no esta conectado. Estado: ${state}. Si tienes QR visible, escanealo desde WhatsApp.`,
     );
   } catch (error) {
@@ -663,3 +694,6 @@ window.addEventListener("beforeunload", (event) => {
 });
 
 render();
+refreshWhatsappState().catch(() => {
+  renderBots();
+});
