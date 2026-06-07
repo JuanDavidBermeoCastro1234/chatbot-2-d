@@ -19,6 +19,7 @@ const n8nWhatsappWebhook = (
 ).replace(/\/$/, "");
 const whatsappStatePath = path.join(root, ".whatsapp-state.json");
 const whatsappEventsPath = path.join(root, ".whatsapp-events.jsonl");
+const whatsappInFlightMessages = new Set();
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -145,6 +146,38 @@ function appendWhatsappEvent(event) {
     ...event,
   };
   fs.appendFileSync(whatsappEventsPath, `${JSON.stringify(entry)}\n`);
+}
+
+function whatsappMessageKey(instanceName, remoteJid, messageId) {
+  const cleanId = String(messageId || "").trim();
+  if (!cleanId) return "";
+  return [instanceName || "", remoteJid || "", cleanId].join("|");
+}
+
+function isWhatsappMessageProcessed(key) {
+  if (!key) return false;
+  const state = readWhatsappState();
+  return Array.isArray(state.processedMessageIds) && state.processedMessageIds.includes(key);
+}
+
+function markWhatsappMessageProcessed(key) {
+  if (!key) return;
+  const state = readWhatsappState();
+  const ids = Array.isArray(state.processedMessageIds) ? state.processedMessageIds : [];
+  const nextIds = [...new Set([...ids, key])].slice(-250);
+  writeWhatsappState({ processedMessageIds: nextIds });
+}
+
+function isGenericAiReply(reply) {
+  const text = String(reply || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return (
+    /soy el asistente/.test(text) &&
+    /te puedo ayudar/.test(text) &&
+    /(precios|calidad|envios|pagos|disponibilidad)/.test(text)
+  );
 }
 
 function recentWhatsappEvents(limit = 20) {
@@ -413,6 +446,7 @@ function readInboundMessage(payload) {
     payload.sender ||
     "";
   return {
+    messageId: key.id || data.messageId || payload.messageId || "",
     text: String(text || "").trim(),
     remoteJid: String(remoteJid || ""),
     fromMe: Boolean(key.fromMe || data.fromMe || payload.fromMe),
@@ -491,7 +525,12 @@ function buildAiPrompt(payload) {
     "",
     `Mensaje actual del cliente: ${payload.message || ""}`,
     "",
-    "Responde como asesor comercial por chat. Usa solo datos del catalogo/politicas. Si falta un dato para cerrar venta, pidelo de forma breve. No inventes precios, descuentos, stock ni promesas.",
+    "Reglas de respuesta:",
+    "- Responde como asesor comercial por chat, breve y claro.",
+    "- Usa solo datos del catalogo, politicas y conocimiento cargado desde la interfaz.",
+    "- Cada linea tipo 'Titulo: contenido' es un dato oficial del negocio. Si el cliente pregunta por ubicacion, direccion, sede, horario, productos, disponibilidad, menu, servicios, precio, calidad, envios o pagos, busca primero en esos titulos y contenidos.",
+    "- Si hay un campo cargado que coincide con la pregunta, responde ese dato directamente. No respondas con un saludo generico cuando existe informacion relacionada.",
+    "- Si falta un dato para cerrar venta, pidelo de forma breve. No inventes precios, descuentos, stock ni promesas.",
     "Devuelve solamente JSON valido con estas claves: reply, intent, lead_status, needs_human.",
   ].join("\n");
 }
@@ -550,11 +589,18 @@ async function runOpenAi(req, res) {
       .trim();
     const parsed = safeJsonParse(cleaned, null);
 
+    const fallbackReply = payload.fallbackReply || "";
+    const replyCandidate = parsed?.reply || cleaned || fallbackReply;
+    const reply =
+      fallbackReply && isGenericAiReply(replyCandidate) && !isGenericAiReply(fallbackReply)
+        ? fallbackReply
+        : replyCandidate;
+
     sendJson(res, 200, {
       ok: true,
       source: "openai",
       model: openaiModel,
-      reply: parsed?.reply || cleaned || payload.fallbackReply,
+      reply,
       intent: parsed?.intent || payload.intent || "general",
       lead_status: parsed?.lead_status || payload.lead_status || "nuevo",
       needs_human: Boolean(parsed?.needs_human),
@@ -599,13 +645,39 @@ async function whatsappSendMessage(req, res) {
   const instanceName = payload.instanceName || state.instanceName || evolutionInstance;
   const remoteJid = payload.remoteJid || payload.number || "";
   const text = payload.text || payload.reply || payload.message || "";
+  const messageId = payload.messageId || payload.inboundMessageId || "";
+  const dedupeKey = whatsappMessageKey(instanceName, remoteJid, messageId);
+
+  if (dedupeKey && (whatsappInFlightMessages.has(dedupeKey) || isWhatsappMessageProcessed(dedupeKey))) {
+    appendWhatsappEvent({
+      type: "n8n_send_skipped_duplicate",
+      instanceName,
+      remoteJid,
+      messageId,
+      text,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      instanceName,
+      remoteJid,
+      messageId,
+      sent: false,
+      skipped: true,
+      reason: "duplicate_message",
+    });
+    return;
+  }
+
+  if (dedupeKey) whatsappInFlightMessages.add(dedupeKey);
 
   try {
     const result = await sendWhatsappText(instanceName, remoteJid, text);
+    if (result.ok && dedupeKey) markWhatsappMessageProcessed(dedupeKey);
     appendWhatsappEvent({
       type: "n8n_send_attempt",
       instanceName,
       remoteJid,
+      messageId,
       text,
       sent: Boolean(result.ok),
       sendResult: result.ok ? "ok" : result.payload || result.error,
@@ -614,6 +686,7 @@ async function whatsappSendMessage(req, res) {
       ok: Boolean(result.ok),
       instanceName,
       remoteJid,
+      messageId,
       sent: Boolean(result.ok),
       result: result.ok ? result.payload : result.payload || result.error,
     });
@@ -622,10 +695,13 @@ async function whatsappSendMessage(req, res) {
       type: "n8n_send_error",
       instanceName,
       remoteJid,
+      messageId,
       text,
       error: error.message,
     });
     sendJson(res, 500, { ok: false, error: error.message, instanceName, remoteJid });
+  } finally {
+    if (dedupeKey) whatsappInFlightMessages.delete(dedupeKey);
   }
 }
 
@@ -785,6 +861,20 @@ async function whatsappWebhook(req, res) {
   }
 
   const state = readWhatsappState();
+  const dedupeKey = whatsappMessageKey(inbound.instanceName || state.instanceName, inbound.remoteJid, inbound.messageId);
+  if (dedupeKey && (whatsappInFlightMessages.has(dedupeKey) || isWhatsappMessageProcessed(dedupeKey))) {
+    appendWhatsappEvent({
+      type: "reply_skipped_duplicate",
+      event: inbound.event || "message",
+      instanceName: inbound.instanceName || state.instanceName,
+      remoteJid: inbound.remoteJid,
+      messageId: inbound.messageId,
+    });
+    sendJson(res, 200, { ok: true, ignored: true, reason: "duplicate_message", inbound });
+    return;
+  }
+  if (dedupeKey) whatsappInFlightMessages.add(dedupeKey);
+
   const bot = state.bot || {
     name: "Chatbot WhatsApp",
     businessName: "Empresa",
@@ -803,12 +893,14 @@ async function whatsappWebhook(req, res) {
     } catch (sendError) {
       sendResult = { ok: false, error: sendError.message };
     }
+    if (sendResult.ok && dedupeKey) markWhatsappMessageProcessed(dedupeKey);
     writeWhatsappState({ lastMessageAt: new Date().toISOString() });
     appendWhatsappEvent({
       type: "reply_attempt",
       event: inbound.event || "message",
       instanceName: inbound.instanceName || state.instanceName,
       remoteJid: inbound.remoteJid,
+      messageId: inbound.messageId,
       reply,
       sent: Boolean(sendResult.ok),
       sendResult: sendResult.ok ? "ok" : sendResult.payload || sendResult.error,
@@ -822,6 +914,8 @@ async function whatsappWebhook(req, res) {
     });
   } catch (error) {
     sendJson(res, 200, { ok: false, error: error.message, inbound });
+  } finally {
+    if (dedupeKey) whatsappInFlightMessages.delete(dedupeKey);
   }
 }
 
