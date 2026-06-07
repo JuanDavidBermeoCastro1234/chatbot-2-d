@@ -88,6 +88,11 @@ const startWhatsappButton = document.querySelector("#startWhatsappButton");
 const checkWhatsappButton = document.querySelector("#checkWhatsappButton");
 const whatsappStatusText = document.querySelector("#whatsappStatusText");
 const qrBox = document.querySelector("#qrBox");
+const knowledgeTextInput = document.querySelector("#knowledgeTextInput");
+const knowledgeFileInput = document.querySelector("#knowledgeFileInput");
+const appendKnowledgeButton = document.querySelector("#appendKnowledgeButton");
+const replaceKnowledgeButton = document.querySelector("#replaceKnowledgeButton");
+const knowledgeImportStatus = document.querySelector("#knowledgeImportStatus");
 let pendingConfirmResolve = null;
 
 function clone(value) {
@@ -142,6 +147,14 @@ function knowledgeFromFields(fields) {
     .join("\n");
 }
 
+function normalizeImportedKnowledge(text) {
+  return String(text || "")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function editorSnapshot() {
   return JSON.stringify(readEditorBot());
 }
@@ -161,6 +174,93 @@ function showSavedStatus(text = "Informacion guardada con exito") {
   saveTimer = window.setTimeout(() => {
     if (!hasUnsavedChanges()) saveStatus.textContent = "";
   }, 2200);
+}
+
+function setKnowledgeImportStatus(text, state = "idle") {
+  knowledgeImportStatus.textContent = text;
+  knowledgeImportStatus.dataset.state = state;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+    reader.onerror = () => reject(reader.error || new Error("No pude leer el archivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function importKnowledgeSource() {
+  const file = knowledgeFileInput.files?.[0] || null;
+  const pastedText = normalizeImportedKnowledge(knowledgeTextInput.value);
+
+  if (file) {
+    const fileBase64 = await fileToBase64(file);
+    const response = await fetch("/api/knowledge/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        fileBase64,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || "No pude importar el archivo.");
+    return data;
+  }
+
+  if (pastedText) {
+    const response = await fetch("/api/knowledge/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: "texto pegado",
+        mimeType: "text/plain",
+        text: pastedText,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || "No pude importar el texto.");
+    return data;
+  }
+
+  throw new Error("Pega informacion o selecciona un archivo.");
+}
+
+async function applyKnowledgeImport(mode) {
+  setKnowledgeImportStatus("Procesando informacion...", "loading");
+  appendKnowledgeButton.disabled = true;
+  replaceKnowledgeButton.disabled = true;
+
+  try {
+    const imported = await importKnowledgeSource();
+    const text = normalizeImportedKnowledge(imported.text);
+    const bot = readEditorBot();
+    const field = {
+      id: `knowledge-${Date.now()}`,
+      title: imported.fileName && imported.fileName !== "texto pegado" ? `Documento ${imported.fileName}` : "Base de conocimiento",
+      content:
+        text +
+        "\n\nInstruccion para el asesor: usa esta informacion como fuente principal, responde de forma profesional, recomienda la mejor opcion y guia al cliente hacia la compra.",
+    };
+
+    const nextFields = mode === "replace" ? [field] : [...bot.fields, field];
+    renderFields(nextFields);
+    markDirty();
+    renderQuickTests(readEditorBot());
+    setKnowledgeImportStatus(
+      `Informacion cargada: ${imported.words || 0} palabras. Guarda la configuracion para usarla en WhatsApp.`,
+      "success",
+    );
+    knowledgeTextInput.value = "";
+    knowledgeFileInput.value = "";
+  } catch (error) {
+    setKnowledgeImportStatus(error.message, "error");
+  } finally {
+    appendKnowledgeButton.disabled = false;
+    replaceKnowledgeButton.disabled = false;
+  }
 }
 
 function commitEditorBot({ showMessage = true } = {}) {
@@ -636,6 +736,8 @@ newBotButton.addEventListener("click", createNewBot);
 deleteBotButton.addEventListener("click", deleteActiveBot);
 connectWhatsappButton.addEventListener("click", openWhatsappModal);
 addFieldButton.addEventListener("click", addField);
+appendKnowledgeButton.addEventListener("click", () => applyKnowledgeImport("append"));
+replaceKnowledgeButton.addEventListener("click", () => applyKnowledgeImport("replace"));
 closeWhatsappButton.addEventListener("click", closeWhatsappModal);
 startWhatsappButton.addEventListener("click", startWhatsappConnection);
 checkWhatsappButton.addEventListener("click", checkWhatsappStatus);
@@ -663,6 +765,11 @@ resetChatButton.addEventListener("click", () => {
     markDirty();
     renderQuickTests();
   });
+});
+
+[knowledgeTextInput, knowledgeFileInput].forEach((input) => {
+  input.addEventListener("input", () => setKnowledgeImportStatus(""));
+  input.addEventListener("change", () => setKnowledgeImportStatus(""));
 });
 
 fieldList.addEventListener("input", () => {

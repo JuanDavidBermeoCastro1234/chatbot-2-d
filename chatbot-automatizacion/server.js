@@ -65,7 +65,7 @@ function readRequestBody(req) {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 1024 * 1024) {
+      if (body.length > 12 * 1024 * 1024) {
         reject(new Error("Payload demasiado grande."));
         req.destroy();
       }
@@ -78,19 +78,20 @@ function readRequestBody(req) {
 async function proxyChat(req, res) {
   try {
     const rawBody = await readRequestBody(req);
+    const payload = enrichChatPayload(safeJsonParse(rawBody || "{}", {}));
     const response = await fetch(n8nWebhook, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: rawBody || "{}",
+      body: JSON.stringify(payload),
     });
     const text = await response.text();
-    let payload;
+    let responsePayload;
     try {
-      payload = JSON.parse(text);
+      responsePayload = JSON.parse(text);
     } catch {
-      payload = { ok: response.ok, reply: text };
+      responsePayload = { ok: response.ok, reply: text };
     }
-    sendJson(res, response.ok ? 200 : response.status, payload);
+    sendJson(res, response.ok ? 200 : response.status, responsePayload);
   } catch (error) {
     sendJson(res, 502, {
       ok: false,
@@ -100,6 +101,28 @@ async function proxyChat(req, res) {
       detail: error.message,
     });
   }
+}
+
+function knowledgeFromBotFields(fields) {
+  if (!Array.isArray(fields)) return "";
+  return fields
+    .filter((field) => String(field.title || "").trim() || String(field.content || "").trim())
+    .map((field) => `${String(field.title || "Informacion").trim()}: ${String(field.content || "").trim()}`)
+    .join("\n");
+}
+
+function enrichChatPayload(payload) {
+  const bot = payload.bot || {};
+  if (!bot.knowledge && Array.isArray(bot.fields)) {
+    return {
+      ...payload,
+      bot: {
+        ...bot,
+        knowledge: knowledgeFromBotFields(bot.fields),
+      },
+    };
+  }
+  return payload;
 }
 
 function safeJsonParse(value, fallback) {
@@ -490,12 +513,13 @@ async function sendWhatsappText(instanceName, remoteJid, text) {
 }
 
 async function askN8nBot(message, bot, conversation = []) {
+  const enrichedBot = enrichChatPayload({ bot }).bot;
   const response = await fetchWithTimeout(
     n8nWebhook,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, bot, conversation }),
+      body: JSON.stringify({ message, bot: enrichedBot, conversation }),
     },
     30000,
   );
@@ -526,11 +550,13 @@ function buildAiPrompt(payload) {
     `Mensaje actual del cliente: ${payload.message || ""}`,
     "",
     "Reglas de respuesta:",
-    "- Responde como asesor comercial por chat, breve y claro.",
+    "- Responde como asesor comercial por chat, breve, claro y orientado a que el cliente avance a la compra.",
     "- Usa solo datos del catalogo, politicas y conocimiento cargado desde la interfaz.",
     "- Cada linea tipo 'Titulo: contenido' es un dato oficial del negocio. Si el cliente pregunta por ubicacion, direccion, sede, horario, productos, disponibilidad, menu, servicios, precio, calidad, envios o pagos, busca primero en esos titulos y contenidos.",
     "- Si hay un campo cargado que coincide con la pregunta, responde ese dato directamente. No respondas con un saludo generico cuando existe informacion relacionada.",
-    "- Si falta un dato para cerrar venta, pidelo de forma breve. No inventes precios, descuentos, stock ni promesas.",
+    "- Si el cliente pregunta algo que no esta cargado, no inventes precios, stock, politicas, descuentos, direcciones ni promesas. Usa lo que si sabes, da una recomendacion comercial razonable y pide el dato minimo para continuar.",
+    "- Siempre que tenga sentido, termina con un siguiente paso de venta: pedir talla, color, ciudad, cantidad, metodo de pago, enlace de compra o confirmacion del pedido.",
+    "- Ajusta el tono al bot: profesional debe sonar serio y confiable; cercano debe sonar amable y natural; premium debe sonar cuidadoso y asesorado.",
     "Devuelve solamente JSON valido con estas claves: reply, intent, lead_status, needs_human.",
   ].join("\n");
 }
@@ -636,6 +662,87 @@ async function whatsappN8nConfig(req, res) {
     evolutionApiKey,
     webhookUrl: n8nWhatsappWebhook,
   });
+}
+
+function summarizeKnowledgeText(text) {
+  const cleaned = String(text || "")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const words = cleaned.split(/\s+/).filter(Boolean).length;
+  return {
+    text: cleaned,
+    characters: cleaned.length,
+    words,
+  };
+}
+
+async function extractPdfText(buffer) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const document = await pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    disableWorker: true,
+  }).promise;
+  const pages = [];
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+    const page = await document.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const text = content.items.map((item) => item.str || "").join(" ");
+    if (text.trim()) pages.push(text.trim());
+  }
+  return pages.join("\n\n");
+}
+
+async function importKnowledge(req, res) {
+  try {
+    const contentType = String(req.headers["content-type"] || "");
+    const rawBody = await readRequestBody(req);
+    const payload = safeJsonParse(rawBody || "{}", {});
+    const fileName = String(payload.fileName || "texto").trim();
+    const mimeType = String(payload.mimeType || contentType || "text/plain").toLowerCase();
+    let importedText = "";
+
+    if (payload.fileBase64) {
+      const base64 = String(payload.fileBase64).replace(/^data:[^,]+,/, "");
+      const buffer = Buffer.from(base64, "base64");
+      if (buffer.length > 8 * 1024 * 1024) {
+        sendJson(res, 413, { ok: false, error: "file_too_large", message: "El archivo supera 8 MB." });
+        return;
+      }
+      if (mimeType.includes("pdf") || /\.pdf$/i.test(fileName)) {
+        importedText = await extractPdfText(buffer);
+      } else {
+        importedText = buffer.toString("utf8");
+      }
+    } else {
+      importedText = String(payload.text || "");
+    }
+
+    const summary = summarizeKnowledgeText(importedText);
+    if (!summary.text) {
+      sendJson(res, 400, {
+        ok: false,
+        error: "empty_knowledge",
+        message: "No pude extraer texto util del archivo o contenido enviado.",
+      });
+      return;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      fileName,
+      mimeType,
+      ...summary,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: "knowledge_import_failed",
+      message: "No pude procesar el archivo. Si es PDF escaneado como imagen, primero hay que convertirlo con OCR.",
+      detail: error.message,
+    });
+  }
 }
 
 async function whatsappSendMessage(req, res) {
@@ -953,6 +1060,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && req.url === "/api/ai") {
     runOpenAi(req, res);
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/knowledge/import") {
+    importKnowledge(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
     return;
   }
   if (req.method === "POST" && req.url === "/api/whatsapp/save-bot") {

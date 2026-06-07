@@ -95,6 +95,27 @@
                 </div>
                 <button class="ghost-button compact" id="addFieldButton" type="button">+ Campo</button>
               </div>
+
+              <section class="knowledge-importer" aria-label="Importar conocimiento">
+                <div>
+                  <p class="section-label">Base de conocimiento</p>
+                  <p class="helper-text">
+                    Pega texto largo o sube .txt, .md o .pdf con toda la informacion de la empresa.
+                  </p>
+                </div>
+                <textarea
+                  id="knowledgeTextInput"
+                  rows="6"
+                  placeholder="Pega aqui catalogo, precios, politicas, ubicacion, preguntas frecuentes, enlaces y condiciones..."
+                ></textarea>
+                <input id="knowledgeFileInput" type="file" accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf" />
+                <div class="import-actions">
+                  <button class="ghost-button compact" id="appendKnowledgeButton" type="button">Agregar al bot</button>
+                  <button class="ghost-button compact" id="replaceKnowledgeButton" type="button">Reemplazar campos</button>
+                </div>
+                <p class="knowledge-import-status" id="knowledgeImportStatus" aria-live="polite"></p>
+              </section>
+
               <div class="field-list" id="fieldList"></div>
             </div>
 

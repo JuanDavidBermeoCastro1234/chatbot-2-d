@@ -8,5 +8,8 @@
     "start": "node server.js",
     "dev": "node server.js",
     "build:workflow": "node tools/build-workflow.js"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^6.0.227"
   }
 }

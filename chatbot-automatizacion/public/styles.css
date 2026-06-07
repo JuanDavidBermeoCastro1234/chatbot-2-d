@@ -445,6 +445,42 @@ h2 {
   gap: 12px;
 }
 
+.knowledge-importer {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(114, 181, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(16, 26, 42, 0.84);
+}
+
+.knowledge-importer input[type="file"] {
+  min-width: 0;
+  padding: 10px;
+}
+
+.import-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.knowledge-import-status {
+  min-height: 18px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.knowledge-import-status[data-state="success"] {
+  color: var(--success);
+}
+
+.knowledge-import-status[data-state="error"] {
+  color: #ffb3bf;
+}
+
 .editor-row {
   display: flex;
   align-items: flex-start;
