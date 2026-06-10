@@ -38,6 +38,8 @@
           </div>
           <div class="topbar-actions">
             <button class="ghost-button" id="resetChatButton" type="button">Limpiar chat</button>
+            <button class="ghost-button" id="notificationSettingsButton" type="button">Notificar</button>
+            <button class="ghost-button" id="toggleChatbotButton" type="button">Desactivar chatbot</button>
             <button class="whatsapp-button" id="connectWhatsappButton" type="button">
               <span aria-hidden="true">WA</span>
               Conectar WhatsApp
@@ -173,6 +175,53 @@
         <div class="qr-box" id="qrBox">
           <p>El QR aparecera aqui cuando Evolution lo entregue.</p>
         </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="notificationModal" hidden>
+      <section class="whatsapp-modal" role="dialog" aria-modal="true" aria-labelledby="notificationTitle">
+        <div class="modal-title-row">
+          <div>
+            <p class="eyebrow">Alertas del negocio</p>
+            <h2 id="notificationTitle">Notificaciones</h2>
+          </div>
+          <button class="ghost-button compact" id="closeNotificationButton" type="button">Cerrar</button>
+        </div>
+
+        <p class="confirm-copy">
+          Configura a quien avisar cuando el bot detecte una venta o necesite una persona real.
+        </p>
+
+        <label class="whatsapp-field">
+          Numero del dueño
+          <input id="ownerPhoneInput" type="tel" placeholder="Ej: 3001234567 o 573001234567" />
+        </label>
+        <label class="whatsapp-field">
+          Correo del dueño
+          <input id="ownerEmailInput" type="email" placeholder="dueno@empresa.com" />
+        </label>
+
+        <div class="notification-options">
+          <label>
+            <input id="notifyOnSaleInput" type="checkbox" />
+            Avisar cuando detecte compra o venta
+          </label>
+          <label>
+            <input id="notifyOnHumanInput" type="checkbox" />
+            Avisar cuando necesite persona real
+          </label>
+        </div>
+
+        <p class="helper-text">
+          El aviso por WhatsApp usa la instancia conectada. El correo queda guardado; para envio real por Gmail hacen falta credenciales SMTP/OAuth.
+        </p>
+
+        <div class="whatsapp-actions">
+          <button class="save-button" id="saveNotificationButton" type="button">Guardar notificaciones</button>
+          <button class="ghost-button" id="testNotificationButton" type="button">Probar aviso</button>
+        </div>
+
+        <div class="whatsapp-status" id="notificationStatusText">Sin configurar todavia.</div>
       </section>
     </div>
 

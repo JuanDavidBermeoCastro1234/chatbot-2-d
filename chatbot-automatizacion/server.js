@@ -91,6 +91,13 @@ async function proxyChat(req, res) {
     } catch {
       responsePayload = { ok: response.ok, reply: text };
     }
+    maybeDispatchChatNotification({
+      ...responsePayload,
+      message: payload.message,
+      bot: payload.bot,
+      channel: "web",
+      customer: "chat local",
+    }).catch(() => {});
     sendJson(res, response.ok ? 200 : response.status, responsePayload);
   } catch (error) {
     sendJson(res, 502, {
@@ -151,9 +158,32 @@ function readWhatsappState() {
     phone: "",
     bot: null,
     connected: false,
+    notifications: defaultNotificationSettings(),
     lastWebhookAt: "",
     lastMessageAt: "",
   });
+}
+
+function defaultNotificationSettings() {
+  return {
+    ownerPhone: "",
+    ownerEmail: "",
+    notifyOnHuman: true,
+    notifyOnSale: true,
+    chatbotEnabled: true,
+  };
+}
+
+function normalizedNotificationSettings(settings = {}) {
+  return {
+    ...defaultNotificationSettings(),
+    ...settings,
+    ownerPhone: normalizePhone(settings.ownerPhone || ""),
+    ownerEmail: String(settings.ownerEmail || "").trim(),
+    notifyOnHuman: settings.notifyOnHuman !== false,
+    notifyOnSale: settings.notifyOnSale !== false,
+    chatbotEnabled: settings.chatbotEnabled !== false,
+  };
 }
 
 function writeWhatsappState(nextState) {
@@ -189,6 +219,141 @@ function markWhatsappMessageProcessed(key) {
   const ids = Array.isArray(state.processedMessageIds) ? state.processedMessageIds : [];
   const nextIds = [...new Set([...ids, key])].slice(-250);
   writeWhatsappState({ processedMessageIds: nextIds });
+}
+
+function notificationKey(channel, remoteJid, messageId, eventType) {
+  const cleanId = String(messageId || "").trim();
+  if (!cleanId) return "";
+  return [channel || "", remoteJid || "", cleanId, eventType || ""].join("|");
+}
+
+function isNotificationProcessed(key) {
+  if (!key) return false;
+  const state = readWhatsappState();
+  return Array.isArray(state.processedNotificationIds) && state.processedNotificationIds.includes(key);
+}
+
+function markNotificationProcessed(key) {
+  if (!key) return;
+  const state = readWhatsappState();
+  const ids = Array.isArray(state.processedNotificationIds) ? state.processedNotificationIds : [];
+  const nextIds = [...new Set([...ids, key])].slice(-300);
+  writeWhatsappState({ processedNotificationIds: nextIds });
+}
+
+function classifyNotificationEvent(payload = {}) {
+  const text = normalizeText(
+    [
+      payload.message,
+      payload.reply,
+      payload.intent,
+      payload.lead_status,
+      payload.reason,
+      payload.error,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+
+  if (payload.chatbotDisabled) {
+    return {
+      type: "human_required",
+      reason: "El chatbot esta desactivado y llego un mensaje que debe responder una persona.",
+    };
+  }
+
+  if (payload.notification_event === "human_required") {
+    return {
+      type: "human_required",
+      reason: "La IA marco esta conversacion para supervision humana.",
+    };
+  }
+
+  if (payload.notification_event === "sale_confirmed") {
+    return {
+      type: "sale_confirmed",
+      reason: "La IA detecto una venta o intencion alta de compra.",
+    };
+  }
+
+  if (
+    payload.needs_human === true ||
+    /(humano|persona real|asesor|agente|supervisor|reclamo|queja|problema|error|molesto|demora|no llego|garantia|devolucion|reembolso|cancelar)/.test(
+      text,
+    )
+  ) {
+    return {
+      type: "human_required",
+      reason: "El cliente necesita apoyo de una persona real o hay una duda/conflicto sensible.",
+    };
+  }
+
+  if (
+    /(compra confirmada|pedido confirmado|venta confirmada|confirmo pedido|confirmar pedido|ya pague|pago realizado|comprobante|quiero comprar|voy a comprar|lo compro|me lo llevo|gracias por la venta|finalizar compra|hacer pedido)/.test(
+      text,
+    ) ||
+    /(venta|compra|pedido|lead_caliente|interesado)/.test(normalizeText(payload.lead_status))
+  ) {
+    return {
+      type: "sale_confirmed",
+      reason: "El chat detecto intencion alta de compra o cierre de venta.",
+    };
+  }
+
+  return null;
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function selectRelevantKnowledge(knowledge, message) {
+  const text = String(knowledge || "").trim();
+  if (text.length <= 9000) return text || "Sin conocimiento adicional.";
+
+  const normalizedMessage = normalizeText(message);
+  const tokens = normalizedMessage
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 3 && !["como", "cual", "cuales", "donde", "quiero", "puedo"].includes(token));
+  const intentPatterns = [
+    /precio|precios|valor|costo|tarifa|plan|cop|\$/,
+    /producto|productos|servicio|servicios|catalogo|camisa|menu|disponible/,
+    /pago|pagos|pagar|nequi|daviplata|transferencia|contra/,
+    /envio|envios|entrega|domicilio|transportadora|ciudad|pais/,
+    /ubicacion|direccion|sede|local|barrio/,
+    /calidad|garantia|material|marca|tela/,
+    /shopify|tienda|link|enlace|comprar|pedido/,
+  ].filter((pattern) => pattern.test(normalizedMessage));
+
+  const sections = text
+    .split(/\n{2,}|(?=^[A-ZÁÉÍÓÚÑa-záéíóúñ][^:\n]{2,80}:)/m)
+    .map((section) => section.trim())
+    .filter(Boolean);
+
+  const scored = sections.map((section, index) => {
+    const normalized = normalizeText(section);
+    let score = index === 0 ? 2 : 0;
+    for (const token of tokens) {
+      if (normalized.includes(token)) score += 3;
+    }
+    for (const pattern of intentPatterns) {
+      if (pattern.test(normalized)) score += 6;
+    }
+    return { section, score, index };
+  });
+
+  const selected = scored
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 10)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.section);
+
+  const fallback = sections.slice(0, 5);
+  return [...new Set(selected.length ? selected : fallback)].join("\n\n").slice(0, 12000);
 }
 
 function isGenericAiReply(reply) {
@@ -512,6 +677,132 @@ async function sendWhatsappText(instanceName, remoteJid, text) {
   return result;
 }
 
+function ownerWhatsappTarget(phone) {
+  const digits = normalizePhone(phone);
+  if (!digits) return "";
+  if (digits.length === 10 && digits.startsWith("3")) return `57${digits}`;
+  return digits;
+}
+
+function notificationLabel(type) {
+  if (type === "sale_confirmed") return "Venta o compra detectada";
+  if (type === "human_required") return "Necesita una persona real";
+  return "Notificacion del chatbot";
+}
+
+function buildOwnerNotificationMessage(event) {
+  const lines = [
+    `[${notificationLabel(event.type)}]`,
+    `Bot: ${event.botName || "Chatbot"}`,
+    event.businessName ? `Empresa: ${event.businessName}` : "",
+    event.channel ? `Canal: ${event.channel}` : "",
+    event.customer ? `Cliente: ${event.customer}` : "",
+    event.reason ? `Motivo: ${event.reason}` : "",
+    event.message ? `Mensaje: ${event.message}` : "",
+    event.reply ? `Respuesta bot: ${event.reply}` : "",
+    "Revisa este chat para continuar la atencion.",
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+async function dispatchOwnerNotification(event) {
+  const state = readWhatsappState();
+  const settings = normalizedNotificationSettings(state.notifications);
+  const shouldNotify =
+    (event.type === "sale_confirmed" && settings.notifyOnSale) ||
+    (event.type === "human_required" && settings.notifyOnHuman);
+
+  if (!shouldNotify) {
+    return { ok: true, skipped: true, reason: "notification_type_disabled" };
+  }
+
+  if (!settings.ownerPhone && !settings.ownerEmail) {
+    appendWhatsappEvent({
+      type: "owner_notification_skipped",
+      notificationType: event.type,
+      reason: "no_destination_configured",
+      botName: event.botName,
+      businessName: event.businessName,
+      channel: event.channel,
+      customer: event.customer,
+      messageId: event.messageId,
+    });
+    return { ok: true, skipped: true, reason: "no_destination_configured" };
+  }
+
+  if (!settings.ownerPhone && settings.ownerEmail) {
+    appendWhatsappEvent({
+      type: "owner_notification_skipped",
+      notificationType: event.type,
+      reason: "email_delivery_not_configured",
+      ownerEmail: settings.ownerEmail,
+      botName: event.botName,
+      businessName: event.businessName,
+      channel: event.channel,
+      customer: event.customer,
+      messageId: event.messageId,
+    });
+    return { ok: true, skipped: true, reason: "email_delivery_not_configured" };
+  }
+
+  const key = notificationKey(event.channel, event.customer, event.messageId, event.type);
+  if (key && isNotificationProcessed(key)) {
+    return { ok: true, skipped: true, reason: "duplicate_notification" };
+  }
+
+  const result = {
+    ok: true,
+    whatsapp: { configured: Boolean(settings.ownerPhone), sent: false },
+    email: { configured: Boolean(settings.ownerEmail), sent: false, note: "email_smtp_not_configured" },
+  };
+
+  if (settings.ownerPhone) {
+    const target = ownerWhatsappTarget(settings.ownerPhone);
+    const sendResult = await sendWhatsappText(
+      state.instanceName || event.instanceName || evolutionInstance,
+      target,
+      buildOwnerNotificationMessage(event),
+    );
+    result.whatsapp = {
+      configured: true,
+      sent: Boolean(sendResult.ok),
+      result: sendResult.ok ? "ok" : sendResult.payload || sendResult.error,
+    };
+  }
+
+  appendWhatsappEvent({
+    type: "owner_notification",
+    notificationType: event.type,
+    botName: event.botName,
+    businessName: event.businessName,
+    channel: event.channel,
+    customer: event.customer,
+    messageId: event.messageId,
+    message: event.message,
+    reply: event.reply,
+    reason: event.reason,
+    result,
+  });
+
+  if (key && (result.whatsapp.sent || result.email.sent)) markNotificationProcessed(key);
+  return result;
+}
+
+async function maybeDispatchChatNotification(payload) {
+  const event = classifyNotificationEvent(payload);
+  if (!event) return { ok: true, notified: false };
+  const bot = payload.bot || {};
+  const result = await dispatchOwnerNotification({
+    ...payload,
+    ...event,
+    botName: bot.name || payload.botName,
+    businessName: bot.businessName || payload.businessName,
+    reply: payload.reply || payload.text,
+    message: payload.message || payload.incomingMessage,
+  });
+  return { ok: true, notified: !result.skipped, result };
+}
+
 async function askN8nBot(message, bot, conversation = []) {
   const enrichedBot = enrichChatPayload({ bot }).bot;
   const response = await fetchWithTimeout(
@@ -529,6 +820,7 @@ async function askN8nBot(message, bot, conversation = []) {
 
 function buildAiPrompt(payload) {
   const bot = payload.bot || {};
+  const relevantKnowledge = selectRelevantKnowledge(bot.knowledge, payload.message);
   const history = Array.isArray(payload.conversation)
     ? payload.conversation
         .slice(-8)
@@ -542,7 +834,7 @@ function buildAiPrompt(payload) {
     `Tono: ${bot.tone || "profesional"}`,
     "",
     "Catalogo, politicas y conocimiento cargado desde la interfaz:",
-    bot.knowledge || "Sin conocimiento adicional.",
+    relevantKnowledge,
     "",
     "Historial reciente:",
     history || "Sin historial.",
@@ -551,13 +843,21 @@ function buildAiPrompt(payload) {
     "",
     "Reglas de respuesta:",
     "- Responde como asesor comercial por chat, breve, claro y orientado a que el cliente avance a la compra.",
+    "- Mantén la respuesta en maximo 2 frases cortas y 320 caracteres, salvo que el cliente pida una explicacion detallada.",
+    "- No pegues listas largas, catalogos completos ni todo el documento cargado. Elige solo el dato mas relevante para la pregunta.",
+    "- Si hay muchos productos o precios, recomienda 1 opcion principal o menciona maximo 2 opciones.",
     "- Usa solo datos del catalogo, politicas y conocimiento cargado desde la interfaz.",
     "- Cada linea tipo 'Titulo: contenido' es un dato oficial del negocio. Si el cliente pregunta por ubicacion, direccion, sede, horario, productos, disponibilidad, menu, servicios, precio, calidad, envios o pagos, busca primero en esos titulos y contenidos.",
     "- Si hay un campo cargado que coincide con la pregunta, responde ese dato directamente. No respondas con un saludo generico cuando existe informacion relacionada.",
     "- Si el cliente pregunta algo que no esta cargado, no inventes precios, stock, politicas, descuentos, direcciones ni promesas. Usa lo que si sabes, da una recomendacion comercial razonable y pide el dato minimo para continuar.",
     "- Siempre que tenga sentido, termina con un siguiente paso de venta: pedir talla, color, ciudad, cantidad, metodo de pago, enlace de compra o confirmacion del pedido.",
+    "- Termina con una sola pregunta o accion concreta. No cierres con varias preguntas a la vez.",
+    "- Si el cliente confirma compra, pago, pedido, comprobante o dice que quiere comprar ya, marca lead_status como sale_confirmed.",
+    "- Si el cliente esta molesto, pide una persona real, reporta problema, garantia, devolucion, reclamo, datos faltantes criticos o no puedes resolver con seguridad, marca needs_human true y ofrece remitirlo a una persona real.",
+    "- Si existe enlace de compra, tienda, Shopify, WhatsApp de ventas o forma de pago en el conocimiento, usalo para guiar el cierre.",
     "- Ajusta el tono al bot: profesional debe sonar serio y confiable; cercano debe sonar amable y natural; premium debe sonar cuidadoso y asesorado.",
-    "Devuelve solamente JSON valido con estas claves: reply, intent, lead_status, needs_human.",
+    "Devuelve solamente JSON valido con estas claves: reply, intent, lead_status, needs_human, confidence, notification_event.",
+    "notification_event debe ser sale_confirmed, human_required o none.",
   ].join("\n");
 }
 
@@ -630,6 +930,8 @@ async function runOpenAi(req, res) {
       intent: parsed?.intent || payload.intent || "general",
       lead_status: parsed?.lead_status || payload.lead_status || "nuevo",
       needs_human: Boolean(parsed?.needs_human),
+      confidence: typeof parsed?.confidence === "number" ? parsed.confidence : null,
+      notification_event: parsed?.notification_event || "none",
     });
   } catch (error) {
     sendJson(res, 200, {
@@ -657,11 +959,52 @@ async function whatsappN8nConfig(req, res) {
     ok: true,
     botId: state.botId || state.bot?.id || "",
     bot: state.bot || null,
+    notifications: normalizedNotificationSettings(state.notifications),
     instanceName: state.instanceName || evolutionInstance,
     evolutionApiUrl,
     evolutionApiKey,
     webhookUrl: n8nWhatsappWebhook,
   });
+}
+
+async function getNotificationConfig(req, res) {
+  const state = readWhatsappState();
+  sendJson(res, 200, {
+    ok: true,
+    notifications: normalizedNotificationSettings(state.notifications),
+  });
+}
+
+async function saveNotificationConfig(req, res) {
+  const rawBody = await readRequestBody(req);
+  const payload = safeJsonParse(rawBody || "{}", {});
+  const state = writeWhatsappState({
+    notifications: normalizedNotificationSettings({
+      ...readWhatsappState().notifications,
+      ...payload.notifications,
+    }),
+  });
+  sendJson(res, 200, {
+    ok: true,
+    notifications: normalizedNotificationSettings(state.notifications),
+  });
+}
+
+async function notificationEvent(req, res) {
+  const rawBody = await readRequestBody(req);
+  const payload = safeJsonParse(rawBody || "{}", {});
+  const event = payload.type ? payload : classifyNotificationEvent(payload);
+  if (!event) {
+    sendJson(res, 200, { ok: true, notified: false, reason: "no_notification_event" });
+    return;
+  }
+  const result = await dispatchOwnerNotification({
+    ...payload,
+    ...event,
+    type: event.type || payload.type,
+    reason: event.reason || payload.reason,
+  });
+  sendJson(res, 200, { ok: true, notified: !result.skipped, result });
 }
 
 function summarizeKnowledgeText(text) {
@@ -749,11 +1092,39 @@ async function whatsappSendMessage(req, res) {
   const rawBody = await readRequestBody(req);
   const payload = safeJsonParse(rawBody || "{}", {});
   const state = readWhatsappState();
+  const notifications = normalizedNotificationSettings(state.notifications);
   const instanceName = payload.instanceName || state.instanceName || evolutionInstance;
   const remoteJid = payload.remoteJid || payload.number || "";
   const text = payload.text || payload.reply || payload.message || "";
   const messageId = payload.messageId || payload.inboundMessageId || "";
   const dedupeKey = whatsappMessageKey(instanceName, remoteJid, messageId);
+
+  if (!notifications.chatbotEnabled) {
+    const notifyResult = await dispatchOwnerNotification({
+      type: "human_required",
+      chatbotDisabled: true,
+      instanceName,
+      channel: "whatsapp",
+      customer: remoteJid,
+      messageId,
+      botName: state.bot?.name || payload.botName,
+      businessName: state.bot?.businessName || payload.businessName,
+      message: payload.incomingMessage || payload.customerMessage || "",
+      reply: "",
+      reason: "El chatbot esta desactivado. Hay un cliente esperando respuesta humana.",
+    });
+    sendJson(res, 200, {
+      ok: true,
+      instanceName,
+      remoteJid,
+      messageId,
+      sent: false,
+      skipped: true,
+      reason: "chatbot_disabled",
+      notifyResult,
+    });
+    return;
+  }
 
   if (dedupeKey && (whatsappInFlightMessages.has(dedupeKey) || isWhatsappMessageProcessed(dedupeKey))) {
     appendWhatsappEvent({
@@ -780,6 +1151,16 @@ async function whatsappSendMessage(req, res) {
   try {
     const result = await sendWhatsappText(instanceName, remoteJid, text);
     if (result.ok && dedupeKey) markWhatsappMessageProcessed(dedupeKey);
+    maybeDispatchChatNotification({
+      ...payload,
+      message: payload.incomingMessage || payload.customerMessage || "",
+      reply: text,
+      channel: "whatsapp",
+      customer: remoteJid,
+      messageId,
+      bot: state.bot || payload.bot,
+      instanceName,
+    }).catch(() => {});
     appendWhatsappEvent({
       type: "n8n_send_attempt",
       instanceName,
@@ -1072,6 +1453,18 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && req.url === "/api/whatsapp/n8n-config") {
     whatsappN8nConfig(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
+  if (req.method === "GET" && req.url === "/api/notifications/config") {
+    getNotificationConfig(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/notifications/config") {
+    saveNotificationConfig(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/notifications/event") {
+    notificationEvent(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
     return;
   }
   if (req.method === "POST" && req.url === "/api/whatsapp/send") {

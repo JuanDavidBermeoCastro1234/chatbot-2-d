@@ -73,6 +73,8 @@ const newBotButton = document.querySelector("#newBotButton");
 const resetChatButton = document.querySelector("#resetChatButton");
 const deleteBotButton = document.querySelector("#deleteBotButton");
 const connectWhatsappButton = document.querySelector("#connectWhatsappButton");
+const notificationSettingsButton = document.querySelector("#notificationSettingsButton");
+const toggleChatbotButton = document.querySelector("#toggleChatbotButton");
 const addFieldButton = document.querySelector("#addFieldButton");
 const saveStatus = document.querySelector("#saveStatus");
 const connectionText = document.querySelector("#connectionText");
@@ -93,7 +95,23 @@ const knowledgeFileInput = document.querySelector("#knowledgeFileInput");
 const appendKnowledgeButton = document.querySelector("#appendKnowledgeButton");
 const replaceKnowledgeButton = document.querySelector("#replaceKnowledgeButton");
 const knowledgeImportStatus = document.querySelector("#knowledgeImportStatus");
+const notificationModal = document.querySelector("#notificationModal");
+const closeNotificationButton = document.querySelector("#closeNotificationButton");
+const ownerPhoneInput = document.querySelector("#ownerPhoneInput");
+const ownerEmailInput = document.querySelector("#ownerEmailInput");
+const notifyOnSaleInput = document.querySelector("#notifyOnSaleInput");
+const notifyOnHumanInput = document.querySelector("#notifyOnHumanInput");
+const saveNotificationButton = document.querySelector("#saveNotificationButton");
+const testNotificationButton = document.querySelector("#testNotificationButton");
+const notificationStatusText = document.querySelector("#notificationStatusText");
 let pendingConfirmResolve = null;
+let notificationSettings = {
+  ownerPhone: "",
+  ownerEmail: "",
+  notifyOnHuman: true,
+  notifyOnSale: true,
+  chatbotEnabled: true,
+};
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -565,6 +583,119 @@ async function refreshWhatsappState() {
   return data;
 }
 
+function renderNotificationControls() {
+  toggleChatbotButton.textContent = notificationSettings.chatbotEnabled ? "Desactivar chatbot" : "Activar chatbot";
+  toggleChatbotButton.classList.toggle("danger-toggle", notificationSettings.chatbotEnabled);
+  toggleChatbotButton.classList.toggle("success-toggle", !notificationSettings.chatbotEnabled);
+}
+
+async function refreshNotificationConfig() {
+  const response = await fetch("/api/notifications/config");
+  const data = await response.json();
+  notificationSettings = {
+    ...notificationSettings,
+    ...(data.notifications || {}),
+  };
+  renderNotificationControls();
+  return data;
+}
+
+function openNotificationModal() {
+  notificationModal.hidden = false;
+  ownerPhoneInput.value = notificationSettings.ownerPhone || "";
+  ownerEmailInput.value = notificationSettings.ownerEmail || "";
+  notifyOnSaleInput.checked = notificationSettings.notifyOnSale !== false;
+  notifyOnHumanInput.checked = notificationSettings.notifyOnHuman !== false;
+  notificationStatusText.textContent = notificationSettings.ownerPhone
+    ? "WhatsApp del dueño configurado para recibir avisos."
+    : "Agrega un numero para recibir avisos por WhatsApp.";
+}
+
+function closeNotificationModal() {
+  notificationModal.hidden = true;
+}
+
+async function saveNotificationConfig(extra = {}) {
+  const modalOpen = !notificationModal.hidden;
+  const nextSettings = {
+    ...notificationSettings,
+    ownerPhone: modalOpen ? ownerPhoneInput.value : notificationSettings.ownerPhone,
+    ownerEmail: modalOpen ? ownerEmailInput.value : notificationSettings.ownerEmail,
+    notifyOnSale: modalOpen ? notifyOnSaleInput.checked : notificationSettings.notifyOnSale,
+    notifyOnHuman: modalOpen ? notifyOnHumanInput.checked : notificationSettings.notifyOnHuman,
+    ...extra,
+  };
+  const response = await fetch("/api/notifications/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notifications: nextSettings }),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.message || "No pude guardar notificaciones.");
+  notificationSettings = data.notifications;
+  renderNotificationControls();
+  return data;
+}
+
+async function saveNotificationSettings() {
+  saveNotificationButton.disabled = true;
+  notificationStatusText.textContent = "Guardando...";
+  try {
+    await saveNotificationConfig();
+    notificationStatusText.textContent = "Notificaciones guardadas.";
+  } catch (error) {
+    notificationStatusText.textContent = error.message;
+  } finally {
+    saveNotificationButton.disabled = false;
+  }
+}
+
+async function toggleChatbotEnabled() {
+  toggleChatbotButton.disabled = true;
+  try {
+    const nextEnabled = !notificationSettings.chatbotEnabled;
+    await saveNotificationConfig({ chatbotEnabled: nextEnabled });
+    connectionText.textContent = nextEnabled
+      ? "Chatbot automatico activo"
+      : "Chatbot automatico desactivado: se notificara al dueño";
+  } catch (error) {
+    connectionText.textContent = `No pude cambiar estado: ${error.message}`;
+  } finally {
+    toggleChatbotButton.disabled = false;
+  }
+}
+
+async function testNotification() {
+  testNotificationButton.disabled = true;
+  notificationStatusText.textContent = "Enviando prueba...";
+  try {
+    await saveNotificationConfig();
+    const bot = readEditorBot();
+    const response = await fetch("/api/notifications/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "human_required",
+        channel: "prueba local",
+        customer: "panel",
+        messageId: `test-${Date.now()}`,
+        botName: bot.name,
+        businessName: bot.businessName,
+        message: "Prueba de notificacion del chatbot.",
+        reason: "Prueba manual desde la interfaz.",
+      }),
+    });
+    const data = await response.json();
+    notificationStatusText.textContent = data.result?.whatsapp?.sent
+      ? "Aviso de prueba enviado por WhatsApp."
+      : `Prueba registrada. WhatsApp: ${data.result?.whatsapp?.result || "sin numero configurado"}.`;
+  } catch (error) {
+    notificationStatusText.textContent = error.message;
+  } finally {
+    testNotificationButton.disabled = false;
+  }
+}
+
 function renderQr(qr) {
   qrBox.innerHTML = "";
   if (qr?.image) {
@@ -735,12 +866,17 @@ saveBotButton.addEventListener("click", () => commitEditorBot());
 newBotButton.addEventListener("click", createNewBot);
 deleteBotButton.addEventListener("click", deleteActiveBot);
 connectWhatsappButton.addEventListener("click", openWhatsappModal);
+notificationSettingsButton.addEventListener("click", openNotificationModal);
+toggleChatbotButton.addEventListener("click", toggleChatbotEnabled);
 addFieldButton.addEventListener("click", addField);
 appendKnowledgeButton.addEventListener("click", () => applyKnowledgeImport("append"));
 replaceKnowledgeButton.addEventListener("click", () => applyKnowledgeImport("replace"));
 closeWhatsappButton.addEventListener("click", closeWhatsappModal);
+closeNotificationButton.addEventListener("click", closeNotificationModal);
 startWhatsappButton.addEventListener("click", startWhatsappConnection);
 checkWhatsappButton.addEventListener("click", checkWhatsappStatus);
+saveNotificationButton.addEventListener("click", saveNotificationSettings);
+testNotificationButton.addEventListener("click", testNotification);
 
 confirmAcceptButton.addEventListener("click", () => closeConfirmModal(true));
 confirmCancelButton.addEventListener("click", () => closeConfirmModal(false));
@@ -750,9 +886,13 @@ confirmModal.addEventListener("click", (event) => {
 whatsappModal.addEventListener("click", (event) => {
   if (event.target === whatsappModal) closeWhatsappModal();
 });
+notificationModal.addEventListener("click", (event) => {
+  if (event.target === notificationModal) closeNotificationModal();
+});
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !confirmModal.hidden) closeConfirmModal(false);
   if (event.key === "Escape" && !whatsappModal.hidden) closeWhatsappModal();
+  if (event.key === "Escape" && !notificationModal.hidden) closeNotificationModal();
 });
 
 resetChatButton.addEventListener("click", () => {
@@ -803,4 +943,7 @@ window.addEventListener("beforeunload", (event) => {
 render();
 refreshWhatsappState().catch(() => {
   renderBots();
+});
+refreshNotificationConfig().catch(() => {
+  renderNotificationControls();
 });

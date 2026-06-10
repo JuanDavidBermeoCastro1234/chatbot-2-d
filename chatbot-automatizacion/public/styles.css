@@ -216,6 +216,8 @@ h2 {
 
 .topbar-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
 }
 
@@ -258,6 +260,16 @@ h2 {
 .whatsapp-button:hover {
   background: rgba(53, 209, 132, 0.15);
   border-color: rgba(53, 209, 132, 0.62);
+}
+
+.danger-toggle {
+  border-color: rgba(255, 82, 105, 0.42);
+  color: #ffd8df;
+}
+
+.success-toggle {
+  border-color: rgba(53, 209, 132, 0.42);
+  color: #c9ffe2;
 }
 
 .whatsapp-button span {
@@ -635,6 +647,30 @@ h2 {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin-top: 14px;
+}
+
+.notification-options {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #101723;
+}
+
+.notification-options label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #d7e2f4;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.notification-options input {
+  width: 16px;
+  height: 16px;
 }
 
 .whatsapp-status {
